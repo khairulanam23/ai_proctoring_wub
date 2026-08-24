@@ -1,7 +1,8 @@
-# AI Proctoring System - Project Dependencies
-# Phase 0 — Step 3: Face Detection & Verification Baseline
+# AI Proctoring System - Base Development Dependencies
+# Core face detection, verification, and testing foundation
 
 opencv-contrib-python>=4.8.0
 numpy>=1.24.0
 pytest>=8.0.0
 requests>=2.31.0
+matplotlib>=3.7.0
