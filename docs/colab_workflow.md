@@ -75,9 +75,7 @@ Colab pre-installs the standard `opencv-python` package, which conflicts with `o
 Download the official ONNX models into `models/` (since model weights are gitignored):
 
 ```bash
-!mkdir -p models
-!wget -nc -O models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
-!wget -nc -O models/face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+!python scripts/download_models.py
 ```
 
 ### 5. Execute Experimentation
