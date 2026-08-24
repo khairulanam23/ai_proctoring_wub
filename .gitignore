@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & Virtual Envs
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Python tooling & caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
+
+# AI datasets & raw data
+data/*
+!data/.gitkeep
+datasets/
+*.zip
+*.tar.gz
+*.tgz
+
+# Model artifacts & checkpoints
+models/*
+!models/.gitkeep
+checkpoints/
+runs/
+wandb/
+
+# Large ML / Model weights files
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.ckpt
+*.h5
+*.keras
+*.bin
+*.engine
+
+# Temporary files
+tmp/
+temp/
+scratch/
+
+# Docker build/data
+docker-data/
