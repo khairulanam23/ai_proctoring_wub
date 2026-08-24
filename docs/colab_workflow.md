@@ -63,14 +63,24 @@ Clone or pull the latest source code from the project repository:
 %cd ai_proctoring_wub
 ```
 
-### 3. Install Dependencies
-Install the required development dependencies inside the Colab runtime:
+### 3. Install Dependencies & Configure OpenCV Contrib
+Colab pre-installs the standard `opencv-python` package, which conflicts with `opencv-contrib-python`. Cleanly uninstall the standard package before installing dependencies:
 
 ```bash
+!pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python opencv-contrib-python-headless
 !pip install -r requirements.txt
 ```
 
-### 4. Execute Experimentation
+### 4. Acquire Model Weights
+Download the official ONNX models into `models/` (since model weights are gitignored):
+
+```bash
+!mkdir -p models
+!wget -nc -O models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+!wget -nc -O models/face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+```
+
+### 5. Execute Experimentation
 * Read datasets directly from `/content/drive/MyDrive/AI_Proctoring/datasets/`.
 * Write model checkpoints and training logs to `/content/drive/MyDrive/AI_Proctoring/models/` and `experiments/`.
 * Save final evaluation metrics and plots to `/content/drive/MyDrive/AI_Proctoring/results/`.
