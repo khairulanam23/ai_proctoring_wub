@@ -1,0 +1,7 @@
+# AI Proctoring System - Project Dependencies
+# Phase 0: Development Environment Setup
+# Note: AI/ML frameworks (PyTorch, OpenCV, Ultralytics, FastAPI, etc.) will be selected and added in subsequent phases.
+
+# Core Development & Environment utilities (optional placeholders)
+# python-dotenv>=1.0.0
+# pydantic>=2.0.0
