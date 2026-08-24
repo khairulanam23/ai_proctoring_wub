@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""CLI script for single-pair face detection and verification experiment."""
+"""CLI script for single-pair and multi-reference face verification experiments."""
 
 import argparse
 from pathlib import Path
 import sys
+from typing import List
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -11,20 +12,36 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import cv2
-from src.face import FaceVerifier
+from src.face import FaceDetector, FacePreprocessor, FaceVerifier
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Verify whether two images belong to the same identity using YuNet + SFace."
+        description="Verify candidate identity using YuNet detection, 5-point alignment, and SFace embeddings."
     )
-    parser.add_argument("image_a", type=str, help="Path to reference/person image (Image A)")
-    parser.add_argument("image_b", type=str, help="Path to test image (Image B)")
+    parser.add_argument(
+        "images",
+        nargs="*",
+        help="Image paths. If 2 paths: [ref_image, test_image]. If multiple with --multi: all except last are references.",
+    )
+    parser.add_argument(
+        "--ref",
+        type=str,
+        nargs="+",
+        default=None,
+        help="One or more reference image paths for multi-image enrollment template.",
+    )
+    parser.add_argument(
+        "--test",
+        type=str,
+        default=None,
+        help="Test image path to verify.",
+    )
     parser.add_argument(
         "--threshold",
         type=float,
-        default=None,
-        help="Custom verification threshold (default: 0.363 for cosine, 1.128 for l2)",
+        default=0.3630,
+        help="Verification threshold (default: 0.3630 for cosine)",
     )
     parser.add_argument(
         "--metric",
@@ -34,91 +51,140 @@ def main() -> int:
         help="Comparison metric (default: cosine)",
     )
     parser.add_argument(
-        "--detector-model",
+        "--illumination",
         type=str,
-        default="models/face_detection_yunet_2023mar.onnx",
-        help="Path to YuNet ONNX model",
-    )
-    parser.add_argument(
-        "--recognizer-model",
-        type=str,
-        default="models/face_recognition_sface_2021dec.onnx",
-        help="Path to SFace ONNX model",
+        choices=["none", "mild_contrast", "clahe"],
+        default="none",
+        help="Illumination normalization mode (default: none)",
     )
 
     args = parser.parse_args()
 
-    path_a = Path(args.image_a)
-    path_b = Path(args.image_b)
+    # Determine reference and test image paths
+    ref_paths: List[Path] = []
+    test_path: Path
 
-    if not path_a.exists():
-        print(f"Error: Reference image not found at '{path_a}'", file=sys.stderr)
-        return 1
-    if not path_b.exists():
-        print(f"Error: Test image not found at '{path_b}'", file=sys.stderr)
-        return 1
-
-    img_a = cv2.imread(str(path_a))
-    img_b = cv2.imread(str(path_b))
-
-    if img_a is None:
-        print(f"Error: Could not decode image at '{path_a}'", file=sys.stderr)
-        return 1
-    if img_b is None:
-        print(f"Error: Could not decode image at '{path_b}'", file=sys.stderr)
+    if args.ref and args.test:
+        ref_paths = [Path(p) for p in args.ref]
+        test_path = Path(args.test)
+    elif len(args.images) >= 2:
+        ref_paths = [Path(p) for p in args.images[:-1]]
+        test_path = Path(args.images[-1])
+    else:
+        parser.print_help()
+        print("\nError: Please provide at least one reference image and one test image.", file=sys.stderr)
         return 1
 
-    try:
-        from src.face import FaceDetector
-        detector = FaceDetector(model_path=args.detector_model)
-        verifier = FaceVerifier(
-            detector=detector,
-            recognizer_model_path=args.recognizer_model,
-            default_metric=args.metric,
-            default_threshold=args.threshold,
+    # Validate file paths
+    for rp in ref_paths:
+        if not rp.exists():
+            print(f"Error: Reference image not found at '{rp}'", file=sys.stderr)
+            return 1
+    if not test_path.exists():
+        print(f"Error: Test image not found at '{test_path}'", file=sys.stderr)
+        return 1
+
+    # Read test image
+    test_img = cv2.imread(str(test_path))
+    if test_img is None:
+        print(f"Error: Could not decode test image at '{test_path}'", file=sys.stderr)
+        return 1
+
+    detector = FaceDetector()
+    preprocessor = FacePreprocessor(detector=detector, illumination_mode=args.illumination)
+    verifier = FaceVerifier(detector=detector, preprocessor=preprocessor, default_threshold=args.threshold)
+
+    # 1. Single Reference Case
+    if len(ref_paths) == 1:
+        ref_path = ref_paths[0]
+        ref_img = cv2.imread(str(ref_path))
+        if ref_img is None:
+            print(f"Error: Could not decode reference image at '{ref_path}'", file=sys.stderr)
+            return 1
+
+        result = verifier.verify(ref_img, test_img, threshold=args.threshold, metric=args.metric)
+
+        print("============================================================")
+        print("FACE VERIFICATION REPORT (SINGLE REFERENCE)")
+        print("============================================================")
+        print(f"Reference Image:           {ref_path.name}")
+        print(f"Test Image:                {test_path.name}")
+        print(f"Reference Faces Detected:  {result.ref_face_count}")
+        print(f"Test Faces Detected:       {result.test_face_count}")
+        print("------------------------------------------------------------")
+
+        if not result.success:
+            print(f"Status:                    REJECTED")
+            print(f"Reason:                    {result.message}")
+            print("============================================================")
+            return 2
+
+        if result.ref_preprocessing and result.test_preprocessing:
+            qr = result.ref_preprocessing.quality
+            qt = result.test_preprocessing.quality
+            pr = qr.pose if qr else None
+            pt = qt.pose if qt else None
+            print(f"Ref Quality:               Status={result.ref_preprocessing.status.value}, Conf={qr.confidence:.3f}, Blur={qr.blur_score:.1f}")
+            if pr:
+                print(f"Ref Pose:                  YawRatio={pr.yaw_ratio:.2f}, Roll={pr.roll_angle_deg:.1f}°")
+            print(f"Test Quality:              Status={result.test_preprocessing.status.value}, Conf={qt.confidence:.3f}, Blur={qt.blur_score:.1f}")
+            if pt:
+                print(f"Test Pose:                 YawRatio={pt.yaw_ratio:.2f}, Roll={pt.roll_angle_deg:.1f}°")
+            print("------------------------------------------------------------")
+
+        decision = "SAME PERSON" if result.same_person else "DIFFERENT PERSON"
+        print(f"Cosine Similarity Score:   {result.similarity:.4f}")
+        print(f"Calibrated Threshold:      {result.threshold:.4f}")
+        print(f"Decision:                  {decision}")
+        print("============================================================")
+        if result.timing_ms:
+            print("\nLatency Profile (CPU):")
+            for k, v in result.timing_ms.items():
+                print(f"  - {k:25s}: {v:6.2f} ms")
+        return 0
+
+    # 2. Multi-Reference Enrollment Case
+    else:
+        ref_imgs = []
+        for rp in ref_paths:
+            img = cv2.imread(str(rp))
+            if img is not None:
+                ref_imgs.append(img)
+
+        m_res = verifier.verify_multi_reference(
+            reference_images=ref_imgs,
+            test_image=test_img,
+            threshold=args.threshold,
+            metric=args.metric,
         )
-    except Exception as e:
-        print(f"Initialization error: {e}", file=sys.stderr)
-        return 1
 
-    result = verifier.verify(
-        image_a=img_a,
-        image_b=img_b,
-        threshold=args.threshold,
-        metric=args.metric,
-    )
+        print("============================================================")
+        print("FACE VERIFICATION REPORT (MULTI-IMAGE ENROLLMENT)")
+        print("============================================================")
+        print(f"Total Enrolled References: {m_res.total_reference_count}")
+        print(f"Valid Quality References:  {m_res.valid_reference_count}")
+        print(f"Test Image:                {test_path.name}")
+        print("------------------------------------------------------------")
 
-    print("========================================")
-    print("FACE VERIFICATION RESULT")
-    print("========================================")
-    print(f"Reference Image:           {path_a.name}")
-    print(f"Test Image:                {path_b.name}")
-    print(f"Reference faces detected:  {result.ref_face_count}")
-    print(f"Test faces detected:       {result.test_face_count}")
-    print("----------------------------------------")
+        if not m_res.success:
+            print(f"Status:                    REJECTED")
+            print(f"Reason:                    {m_res.message}")
+            print("============================================================")
+            return 2
 
-    if not result.success:
-        print(f"Status:                    REJECTED")
-        print(f"Reason:                    {result.message}")
-        print("========================================")
-        return 2
-
-    sim_str = f"{result.similarity:.4f}" if result.similarity is not None else "N/A"
-    decision = "SAME PERSON" if result.same_person else "DIFFERENT PERSON"
-
-    print(f"Similarity / Score:        {sim_str}")
-    print(f"Threshold:                 {result.threshold:.4f}")
-    print(f"Metric:                    {result.distance_metric}")
-    print("----------------------------------------")
-    print(f"Decision:                  {decision}")
-    print("========================================")
-
-    if result.timing_ms:
-        print("\nLatency Profile (CPU):")
-        for key, val in result.timing_ms.items():
-            print(f"  - {key:25s}: {val:6.2f} ms")
-
-    return 0
+        decision = "SAME PERSON" if m_res.same_person else "DIFFERENT PERSON"
+        print(f"Individual Match Scores:   {[round(s, 4) for s in m_res.individual_scores]}")
+        print(f"Template Similarity:       {m_res.template_similarity:.4f}")
+        print(f"Maximum Match Similarity:  {m_res.max_similarity:.4f}")
+        print(f"Combined Robust Score:     {m_res.similarity:.4f}")
+        print(f"Calibrated Threshold:      {m_res.threshold:.4f}")
+        print(f"Decision:                  {decision}")
+        print("============================================================")
+        if m_res.timing_ms:
+            print("\nLatency Profile (CPU):")
+            for k, v in m_res.timing_ms.items():
+                print(f"  - {k:25s}: {v:6.2f} ms")
+        return 0
 
 
 if __name__ == "__main__":

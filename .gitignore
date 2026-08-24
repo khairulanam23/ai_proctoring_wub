@@ -69,6 +69,7 @@ wandb/
 tmp/
 temp/
 scratch/
+colab/
 
 # Docker build/data
 docker-data/
