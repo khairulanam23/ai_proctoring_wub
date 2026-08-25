@@ -3,10 +3,10 @@
 
 import argparse
 import json
-from pathlib import Path
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -17,17 +17,16 @@ import cv2
 import numpy as np
 import psutil
 
-from src.object_detection import (
+from proctoring.detection import (
     ImageAugmenter,
     ObjectDetector,
     ObjectRelevanceFilter,
     ThresholdEvaluator,
-    VisualCondition,
     generate_visual_comparison_grid,
 )
 
 
-def get_memory_stats() -> Dict[str, Any]:
+def get_memory_stats() -> dict[str, Any]:
     """Inspect GPU VRAM and system CPU RAM usage."""
     stats = {
         "cpu_ram_used_mb": round(psutil.Process().memory_info().rss / (1024 * 1024), 2),
@@ -36,6 +35,7 @@ def get_memory_stats() -> Dict[str, Any]:
     }
     try:
         import torch
+
         if torch.cuda.is_available():
             stats["gpu_allocated_mb"] = round(torch.cuda.memory_allocated(0) / (1024 * 1024), 2)
             stats["gpu_reserved_mb"] = round(torch.cuda.memory_reserved(0) / (1024 * 1024), 2)
@@ -49,7 +49,7 @@ def run_condition_stress_test(
     relevance_filter: ObjectRelevanceFilter,
     source_image: np.ndarray,
     output_grid_path: Path,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Evaluate detector across 8 controlled visual conditions and render comparison grid."""
     print("\n" + "=" * 60)
     print("TEST 1: CONTROLLED VISUAL CONDITION STRESS TEST")
@@ -72,7 +72,9 @@ def run_condition_stress_test(
             "inference_time_ms": round(raw.inference_time_ms, 2),
             "relevant_objects": rel_names,
         }
-        print(f"  • {cond_name.replace('_', ' ').title():20s}: {rep.relevant_count} relevant [Persons: {rep.person_count}] in {raw.inference_time_ms:5.1f} ms -> {rel_names}")
+        print(
+            f"  • {cond_name.replace('_', ' ').title():20s}: {rep.relevant_count} relevant [Persons: {rep.person_count}] in {raw.inference_time_ms:5.1f} ms -> {rel_names}"
+        )
 
     output_grid_path.parent.mkdir(parents=True, exist_ok=True)
     generate_visual_comparison_grid(conditions, cond_results, output_grid_path)
@@ -84,7 +86,7 @@ def run_condition_stress_test(
 def run_threshold_sweep_test(
     detector: ObjectDetector,
     source_image: np.ndarray,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Evaluate multiple confidence cutoff thresholds."""
     print("\n" + "=" * 60)
     print("TEST 2: CONFIDENCE THRESHOLD CALIBRATION SWEEP")
@@ -96,7 +98,9 @@ def run_threshold_sweep_test(
     sweep_results = ThresholdEvaluator.evaluate_threshold_sweep(detector, images_gt, thresholds)
 
     results_data = []
-    print(f"  {'Threshold':<10} {'Detections':<12} {'Avg Conf':<12} {'Precision':<12} {'Recall':<12} {'F1':<10}")
+    print(
+        f"  {'Threshold':<10} {'Detections':<12} {'Avg Conf':<12} {'Precision':<12} {'Recall':<12} {'F1':<10}"
+    )
     print("  " + "-" * 66)
 
     for r in sweep_results:
@@ -104,7 +108,9 @@ def run_threshold_sweep_test(
         p_str = f"{m.precision:.2f}" if m else "N/A"
         r_str = f"{m.recall:.2f}" if m else "N/A"
         f1_str = f"{m.f1:.2f}" if m else "N/A"
-        print(f"  {r.threshold:<10.2f} {r.total_detections:<12d} {r.average_confidence:<12.4f} {p_str:<12s} {r_str:<12s} {f1_str:<10s}")
+        print(
+            f"  {r.threshold:<10.2f} {r.total_detections:<12d} {r.average_confidence:<12.4f} {p_str:<12s} {r_str:<12s} {f1_str:<10s}"
+        )
         results_data.append(r.to_dict())
 
     return results_data
@@ -114,7 +120,7 @@ def run_resolution_benchmark(
     detector: ObjectDetector,
     source_image: np.ndarray,
     iterations: int = 15,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Benchmark inference latency and memory across 480p, 720p, and 1080p resolutions."""
     print("\n" + "=" * 60)
     print("TEST 3: INPUT RESOLUTION LATENCY & THROUGHPUT BENCHMARK")
@@ -155,7 +161,9 @@ def run_resolution_benchmark(
             "throughput_fps": round(fps, 1),
             "memory": get_memory_stats(),
         }
-        print(f"  • {res_name:18s}: Avg {avg_ms:5.1f} ms [P50: {p50_ms:5.1f} ms, P95: {p95_ms:5.1f} ms] -> {fps:5.1f} FPS")
+        print(
+            f"  • {res_name:18s}: Avg {avg_ms:5.1f} ms [P50: {p50_ms:5.1f} ms, P95: {p95_ms:5.1f} ms] -> {fps:5.1f} FPS"
+        )
 
     return res_summary
 
@@ -164,7 +172,7 @@ def run_long_run_stability_test(
     detector: ObjectDetector,
     source_image: np.ndarray,
     cycles: int = 50,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run repetitive streaming cycles to evaluate memory growth and leak stability."""
     print("\n" + "=" * 60)
     print(f"TEST 4: LONG-RUN STREAMING STABILITY TEST ({cycles} CYCLES)")
@@ -173,7 +181,7 @@ def run_long_run_stability_test(
     mem_start = get_memory_stats()
     t0 = time.perf_counter()
 
-    for i in range(cycles):
+    for _i in range(cycles):
         _ = detector.detect(source_image)
 
     total_s = time.perf_counter() - t0
@@ -182,8 +190,12 @@ def run_long_run_stability_test(
     gpu_growth = mem_end["gpu_allocated_mb"] - mem_start["gpu_allocated_mb"]
 
     print(f"  • Completed {cycles} continuous inference iterations in {total_s:.2f} s")
-    print(f"  • CPU RAM Start: {mem_start['cpu_ram_used_mb']} MB -> End: {mem_end['cpu_ram_used_mb']} MB (Delta: {cpu_growth:+.2f} MB)")
-    print(f"  • GPU VRAM Start: {mem_start['gpu_allocated_mb']} MB -> End: {mem_end['gpu_allocated_mb']} MB (Delta: {gpu_growth:+.2f} MB)")
+    print(
+        f"  • CPU RAM Start: {mem_start['cpu_ram_used_mb']} MB -> End: {mem_end['cpu_ram_used_mb']} MB (Delta: {cpu_growth:+.2f} MB)"
+    )
+    print(
+        f"  • GPU VRAM Start: {mem_start['gpu_allocated_mb']} MB -> End: {mem_end['gpu_allocated_mb']} MB (Delta: {gpu_growth:+.2f} MB)"
+    )
 
     return {
         "cycles": cycles,

@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-proctoring"
+version = "1.0.0"
+description = "Computer-vision examination proctoring that produces evidence for a human proctor, not verdicts"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["proctoring", "computer-vision", "examination", "moodle", "evidence"]
+
+# Core: face presence, identity verification, temporal qualification, evidence
+# packaging and the CLI. Behavioural analysis and object detection are extras, so
+# a deployment that needs neither does not pull in mediapipe or torch.
+dependencies = [
+    "opencv-contrib-python>=4.8.0",
+    "numpy>=1.24.0",
+    "psutil>=5.9.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+behaviour = ["mediapipe>=0.10.0"]
+detection = ["ultralytics>=8.3.0", "torch>=2.0.0", "torchvision>=0.15.0"]
+plots = ["matplotlib>=3.7.0"]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+]
+all = ["ai-proctoring[behaviour,detection,plots]"]
+
+[project.scripts]
+proctor = "proctoring.cli.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["proctoring*"]
+exclude = ["tests*", "tools*", "scripts*", "data*", "docs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    # MediaPipe emits these from its own teardown at interpreter exit.
+    "ignore::DeprecationWarning:mediapipe.*",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".venv", "data", "models", "tools/research"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RET", "ARG"]
+ignore = [
+    "E501",    # line length is handled by the formatter, not the linter
+    "B008",    # function calls in argument defaults are used deliberately for configs
+    "SIM108",  # ternaries are not always clearer than an if/else
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Fixtures look like unused arguments; bare asserts are the point of a test.
+"tests/*" = ["ARG", "B011", "F841"]
+# Scripts bootstrap sys.path before importing the package, which E402 flags.
+"scripts/*" = ["E402"]
+# Superseded single-modality prototypes, kept for reference rather than maintained.
+"tools/research/*" = ["ALL"]
+# Evaluation harnesses build large literal report structures.
+"tools/*" = ["ARG", "B007", "F841", "C408", "E741", "SIM105", "RET504"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["proctoring", "tools"]
+
+[tool.mypy]
+python_version = "3.10"
+# The integration boundary and the event schema are what a host LMS depends on, so
+# those are checked strictly. The detector wrappers deal in untyped third-party
+# libraries and are checked loosely rather than drowned in ignores.
+files = ["proctoring"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["proctoring.integration.*", "proctoring.core.*"]
+disallow_untyped_defs = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+module = ["proctoring.detection.*", "proctoring.analysis.*", "proctoring.capture.*"]
+disallow_untyped_defs = false

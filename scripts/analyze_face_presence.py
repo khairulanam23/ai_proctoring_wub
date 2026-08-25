@@ -3,8 +3,8 @@
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -12,7 +12,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import cv2
-from src.face import FaceDetector, FacePresenceAnalyzer
+
+from proctoring.detection import FaceDetector, FacePresenceAnalyzer
 
 
 def main() -> int:
@@ -83,7 +84,9 @@ def main() -> int:
             print(f"  Bounding box: x={x}, y={y}, w={w}, h={h}")
             if face.landmarks:
                 r_eye, l_eye, nose, r_mouth, l_mouth = face.landmarks
-                print(f"  Landmarks:    R.Eye=({r_eye[0]:.1f}, {r_eye[1]:.1f}), L.Eye=({l_eye[0]:.1f}, {l_eye[1]:.1f}), Nose=({nose[0]:.1f}, {nose[1]:.1f})")
+                print(
+                    f"  Landmarks:    R.Eye=({r_eye[0]:.1f}, {r_eye[1]:.1f}), L.Eye=({l_eye[0]:.1f}, {l_eye[1]:.1f}), Nose=({nose[0]:.1f}, {nose[1]:.1f})"
+                )
 
     print("========================================")
 

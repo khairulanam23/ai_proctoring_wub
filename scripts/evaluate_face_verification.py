@@ -2,11 +2,9 @@
 """Batch evaluation script for face verification baseline benchmarking."""
 
 import argparse
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-import sys
-import time
-from typing import List, Tuple, Dict, Optional
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -16,12 +14,13 @@ if str(PROJECT_ROOT) not in sys.path:
 import cv2
 import numpy as np
 
-from src.face import FaceDetector, FaceVerifier
+from proctoring.detection import FaceDetector, FaceVerifier
 
 
 @dataclass
 class ImagePair:
     """Pair of images with ground truth identity label."""
+
     image_a_path: Path
     image_b_path: Path
     is_same_person: bool
@@ -32,6 +31,7 @@ class ImagePair:
 @dataclass
 class Metrics:
     """Evaluation metrics for a given threshold."""
+
     threshold: float
     total: int
     positive_total: int
@@ -46,9 +46,11 @@ class Metrics:
     f1_score: float
 
 
-def build_image_pairs_from_directory(data_dir: Path, max_pairs_per_person: int = 5) -> List[ImagePair]:
+def build_image_pairs_from_directory(
+    data_dir: Path, max_pairs_per_person: int = 5
+) -> list[ImagePair]:
     """Construct positive and negative pairs from directory structure.
-    
+
     Expected format:
         data_dir/
             <identity_1>/
@@ -56,7 +58,7 @@ def build_image_pairs_from_directory(data_dir: Path, max_pairs_per_person: int =
             <identity_2>/
                 img1.jpg, img2.jpg, ...
     """
-    identities: Dict[str, List[Path]] = {}
+    identities: dict[str, list[Path]] = {}
     valid_exts = {".jpg", ".jpeg", ".png", ".bmp"}
 
     for person_folder in sorted(data_dir.iterdir()):
@@ -66,9 +68,11 @@ def build_image_pairs_from_directory(data_dir: Path, max_pairs_per_person: int =
                 identities[person_folder.name] = imgs
 
     if len(identities) < 2:
-        raise ValueError(f"Need at least 2 identities with >= 2 images each. Found {len(identities)}.")
+        raise ValueError(
+            f"Need at least 2 identities with >= 2 images each. Found {len(identities)}."
+        )
 
-    pairs: List[ImagePair] = []
+    pairs: list[ImagePair] = []
     id_names = sorted(identities.keys())
 
     # 1. Generate Positive Pairs (Same Identity)
@@ -126,18 +130,18 @@ def build_image_pairs_from_directory(data_dir: Path, max_pairs_per_person: int =
 
 
 def compute_metrics(
-    scores: List[Optional[float]],
-    labels: List[bool],
+    scores: list[float | None],
+    labels: list[bool],
     threshold: float,
     metric: str = "cosine",
 ) -> Metrics:
     """Calculate confusion matrix and accuracy metrics for a specific threshold."""
     tp = tn = fp = fn = 0
     valid_total = 0
-    pos_total = sum(1 for l in labels if l)
+    pos_total = sum(1 for label in labels if label)
     neg_total = len(labels) - pos_total
 
-    for score, is_same in zip(scores, labels):
+    for score, is_same in zip(scores, labels, strict=False):
         if score is None:
             # Face detection failed on at least one image
             if is_same:
@@ -210,13 +214,13 @@ def run_evaluation(
     print("------------------------------------------------------------")
     print("Extracting features and computing pair similarities...")
 
-    scores: List[Optional[float]] = []
-    labels: List[bool] = []
+    scores: list[float | None] = []
+    labels: list[bool] = []
     detection_failures = 0
 
-    latencies: List[float] = []
+    latencies: list[float] = []
 
-    for i, pair in enumerate(pairs, 1):
+    for _i, pair in enumerate(pairs, 1):
         img_a = cv2.imread(str(pair.image_a_path))
         img_b = cv2.imread(str(pair.image_b_path))
 
@@ -245,7 +249,9 @@ def run_evaluation(
     print("\n------------------------------------------------------------")
     print(f"THRESHOLD SWEEP RESULTS ({metric.upper()})")
     print("------------------------------------------------------------")
-    print(f"{'Threshold':>9s} | {'Acc':>6s} | {'Prec':>6s} | {'Rec':>6s} | {'F1':>6s} | {'TP':>4s} | {'TN':>4s} | {'FP':>4s} | {'FN':>4s}")
+    print(
+        f"{'Threshold':>9s} | {'Acc':>6s} | {'Prec':>6s} | {'Rec':>6s} | {'F1':>6s} | {'TP':>4s} | {'TN':>4s} | {'FP':>4s} | {'FN':>4s}"
+    )
     print("-" * 65)
 
     if metric == "cosine":
@@ -253,15 +259,19 @@ def run_evaluation(
     else:
         test_thresholds = np.linspace(0.80, 1.40, 25)
 
-    best_metrics: Optional[Metrics] = None
+    best_metrics: Metrics | None = None
 
     for thresh in test_thresholds:
         m = compute_metrics(scores, labels, thresh, metric=metric)
         print(
-            f"{m.threshold:9.3f} | {m.accuracy*100:5.1f}% | {m.precision*100:5.1f}% | "
-            f"{m.recall*100:5.1f}% | {m.f1_score:6.3f} | {m.tp:4d} | {m.tn:4d} | {m.fp:4d} | {m.fn:4d}"
+            f"{m.threshold:9.3f} | {m.accuracy * 100:5.1f}% | {m.precision * 100:5.1f}% | "
+            f"{m.recall * 100:5.1f}% | {m.f1_score:6.3f} | {m.tp:4d} | {m.tn:4d} | {m.fp:4d} | {m.fn:4d}"
         )
-        if best_metrics is None or m.accuracy > best_metrics.accuracy or (m.accuracy == best_metrics.accuracy and m.f1_score > best_metrics.f1_score):
+        if (
+            best_metrics is None
+            or m.accuracy > best_metrics.accuracy
+            or (m.accuracy == best_metrics.accuracy and m.f1_score > best_metrics.f1_score)
+        ):
             best_metrics = m
 
     print("============================================================")
@@ -269,9 +279,9 @@ def run_evaluation(
     print("============================================================")
     if best_metrics:
         print(f"Recommended Threshold:     {best_metrics.threshold:.3f}")
-        print(f"Peak Accuracy:             {best_metrics.accuracy*100:.2f}%")
-        print(f"Precision:                 {best_metrics.precision*100:.2f}%")
-        print(f"Recall:                    {best_metrics.recall*100:.2f}%")
+        print(f"Peak Accuracy:             {best_metrics.accuracy * 100:.2f}%")
+        print(f"Precision:                 {best_metrics.precision * 100:.2f}%")
+        print(f"Recall:                    {best_metrics.recall * 100:.2f}%")
         print(f"F1-Score:                  {best_metrics.f1_score:.4f}")
         print(f"True Positives (TP):       {best_metrics.tp}")
         print(f"True Negatives (TN):       {best_metrics.tn}")
@@ -281,7 +291,9 @@ def run_evaluation(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Evaluate YuNet + SFace face verification performance.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate YuNet + SFace face verification performance."
+    )
     parser.add_argument(
         "--data-dir",
         type=str,

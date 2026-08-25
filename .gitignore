@@ -69,7 +69,10 @@ wandb/
 tmp/
 temp/
 scratch/
-colab/
 
 # Docker build/data
 docker-data/
+
+# Generated session evidence packages
+data/results/
+data/evidence_packages/

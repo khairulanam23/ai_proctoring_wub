@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Threshold calibration and error rate evaluation on identity benchmark pairs."""
 
+import sys
 from itertools import combinations
 from pathlib import Path
-import sys
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -12,9 +12,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import cv2
 import numpy as np
-from src.face.detector import FaceDetector
-from src.face.preprocessing import FacePreprocessor
-from src.face.verifier import FaceVerifier
+
+from proctoring.detection.face_detector import FaceDetector
+from proctoring.detection.face_verifier import FaceVerifier
+from proctoring.preprocessing.face_preprocessing import FacePreprocessor
 
 
 def run_threshold_calibration(samples_dir: Path = Path("data/samples")) -> None:
@@ -23,7 +24,11 @@ def run_threshold_calibration(samples_dir: Path = Path("data/samples")) -> None:
     verifier = FaceVerifier(detector=detector, preprocessor=preprocessor)
 
     identities = sorted(
-        [d for d in samples_dir.iterdir() if d.is_dir() and not d.name.startswith(".") and d.name != "synthetic"]
+        [
+            d
+            for d in samples_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(".") and d.name != "synthetic"
+        ]
     )
 
     if len(identities) < 2:
@@ -47,7 +52,7 @@ def run_threshold_calibration(samples_dir: Path = Path("data/samples")) -> None:
     # Build Negative Pairs (Different people)
     neg_pairs = []
     names = list(images_by_id.keys())
-    for (n1, n2) in combinations(names, 2):
+    for n1, n2 in combinations(names, 2):
         img1 = images_by_id[n1][0]
         img2 = images_by_id[n2][0]
         neg_pairs.append((img1, img2, f"{n1}_vs_{n2}"))
@@ -64,7 +69,7 @@ def run_threshold_calibration(samples_dir: Path = Path("data/samples")) -> None:
     neg_scores = []
 
     # Evaluate Genuine Pairs
-    for p1, p2, name in pos_pairs:
+    for p1, p2, _name in pos_pairs:
         i1 = cv2.imread(str(p1))
         i2 = cv2.imread(str(p2))
         res = verifier.verify(i1, i2)
@@ -72,7 +77,7 @@ def run_threshold_calibration(samples_dir: Path = Path("data/samples")) -> None:
             pos_scores.append(res.similarity)
 
     # Evaluate Impostor Pairs
-    for p1, p2, name in neg_pairs:
+    for p1, p2, _name in neg_pairs:
         i1 = cv2.imread(str(p1))
         i2 = cv2.imread(str(p2))
         res = verifier.verify(i1, i2)
@@ -86,11 +91,15 @@ def run_threshold_calibration(samples_dir: Path = Path("data/samples")) -> None:
     print(f"  • Genuine (Same Person)  [N={len(pos_arr)}]:")
     print(f"      Mean: {np.mean(pos_arr):.4f} ± {np.std(pos_arr):.4f}")
     print(f"      Min:  {np.min(pos_arr):.4f} | Max: {np.max(pos_arr):.4f}")
-    print(f"      25th Percentile: {np.percentile(pos_arr, 25):.4f} | Median: {np.median(pos_arr):.4f}")
+    print(
+        f"      25th Percentile: {np.percentile(pos_arr, 25):.4f} | Median: {np.median(pos_arr):.4f}"
+    )
     print(f"  • Impostor (Diff Person) [N={len(neg_arr)}]:")
     print(f"      Mean: {np.mean(neg_arr):.4f} ± {np.std(neg_arr):.4f}")
     print(f"      Min:  {np.min(neg_arr):.4f} | Max: {np.max(neg_arr):.4f}")
-    print(f"      Median: {np.median(neg_arr):.4f} | 75th Percentile: {np.percentile(neg_arr, 75):.4f}")
+    print(
+        f"      Median: {np.median(neg_arr):.4f} | 75th Percentile: {np.percentile(neg_arr, 75):.4f}"
+    )
     print("------------------------------------------------------------")
 
     # Threshold Sweep Table
@@ -100,7 +109,6 @@ def run_threshold_calibration(samples_dir: Path = Path("data/samples")) -> None:
 
     threshold_candidates = np.linspace(0.25, 0.55, 13)
     best_f1 = 0.0
-    best_thresh = 0.3630
 
     for t in threshold_candidates:
         tp = np.sum(pos_arr >= t)
@@ -118,13 +126,14 @@ def run_threshold_calibration(samples_dir: Path = Path("data/samples")) -> None:
 
         if f1 > best_f1:
             best_f1 = f1
-            best_thresh = t
 
-        print(f"{t:6.3f} | {acc*100:7.2f}% | {far*100:6.2f}% ({fp:2d}) | {frr*100:6.2f}% ({fn:2d}) | {prec*100:8.2f}% | {rec*100:7.2f}% | {f1:7.4f}")
+        print(
+            f"{t:6.3f} | {acc * 100:7.2f}% | {far * 100:6.2f}% ({fp:2d}) | {frr * 100:6.2f}% ({fn:2d}) | {prec * 100:8.2f}% | {rec * 100:7.2f}% | {f1:7.4f}"
+        )
 
     print("------------------------------------------------------------")
-    print(f"Recommended Operational Threshold for Proctoring: 0.3630")
-    print(f"  - At Threshold 0.3630: FAR = 0.00% (0 impostor accepted), Accuracy = 100.00%")
+    print("Recommended Operational Threshold for Proctoring: 0.3630")
+    print("  - At Threshold 0.3630: FAR = 0.00% (0 impostor accepted), Accuracy = 100.00%")
     print("============================================================")
 
 

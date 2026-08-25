@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Phase 2: Real-Image Face Verification Experiment Script."""
 
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -12,7 +12,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import cv2
 import numpy as np
-from src.face import FaceDetector, FaceVerifier
+
+from proctoring.detection import FaceDetector, FaceVerifier
 
 
 def run_real_verification(
@@ -41,15 +42,25 @@ def run_real_verification(
     test_img = cv2.imread(str(test_path))
 
     if ref_img is None or ref_img.size == 0:
-        print(f"Error: Failed to decode reference image from '{ref_path}'. File may be corrupted or empty.", file=sys.stderr)
+        print(
+            f"Error: Failed to decode reference image from '{ref_path}'. File may be corrupted or empty.",
+            file=sys.stderr,
+        )
         return 1
     if test_img is None or test_img.size == 0:
-        print(f"Error: Failed to decode test image from '{test_path}'. File may be corrupted or empty.", file=sys.stderr)
+        print(
+            f"Error: Failed to decode test image from '{test_path}'. File may be corrupted or empty.",
+            file=sys.stderr,
+        )
         return 1
 
     print("Image Properties:")
-    print(f"  - Reference Image: {ref_img.shape[1]}x{ref_img.shape[0]} (Channels: {ref_img.shape[2]}, Dtype: {ref_img.dtype})")
-    print(f"  - Test Image:      {test_img.shape[1]}x{test_img.shape[0]} (Channels: {test_img.shape[2]}, Dtype: {test_img.dtype})")
+    print(
+        f"  - Reference Image: {ref_img.shape[1]}x{ref_img.shape[0]} (Channels: {ref_img.shape[2]}, Dtype: {ref_img.dtype})"
+    )
+    print(
+        f"  - Test Image:      {test_img.shape[1]}x{test_img.shape[0]} (Channels: {test_img.shape[2]}, Dtype: {test_img.dtype})"
+    )
     print("------------------------------------------------------------")
 
     # 3. Model Initialization
@@ -103,8 +114,12 @@ def run_real_verification(
     t_feat_test_ms = (time.perf_counter() - t0) * 1000.0
 
     print("SFace Feature Embedding Dimensions:")
-    print(f"  - Reference Embedding Shape: {feat_ref.shape} (Dtype: {feat_ref.dtype}, L2 Norm: {np.linalg.norm(feat_ref):.4f})")
-    print(f"  - Test Embedding Shape:      {feat_test.shape} (Dtype: {feat_test.dtype}, L2 Norm: {np.linalg.norm(feat_test):.4f})")
+    print(
+        f"  - Reference Embedding Shape: {feat_ref.shape} (Dtype: {feat_ref.dtype}, L2 Norm: {np.linalg.norm(feat_ref):.4f})"
+    )
+    print(
+        f"  - Test Embedding Shape:      {feat_test.shape} (Dtype: {feat_test.dtype}, L2 Norm: {np.linalg.norm(feat_test):.4f})"
+    )
     print("------------------------------------------------------------")
 
     # 6. Similarity & Verification
@@ -119,7 +134,7 @@ def run_real_verification(
     total_time_ms = t_det_ref_ms + t_det_test_ms + t_feat_ref_ms + t_feat_test_ms + t_match_ms
 
     print("Verification Comparison:")
-    print(f"  - Metric:           Cosine Similarity")
+    print("  - Metric:           Cosine Similarity")
     print(f"  - Cosine Similarity: {similarity:.4f}")
     print(f"  - Baseline Threshold:{threshold:.4f}")
     print(f"  - Final Decision:    {decision}")
@@ -140,7 +155,9 @@ def run_real_verification(
     print(f"Threshold:       {threshold:.4f}")
     print(f"Decision:        {decision}")
     print(f"Processing time: {total_time_ms:.2f} ms")
-    print("Problems:        None" if same_person else "Problems: Similarity below baseline threshold")
+    print(
+        "Problems:        None" if same_person else "Problems: Similarity below baseline threshold"
+    )
     print("============================================================")
 
     return 0

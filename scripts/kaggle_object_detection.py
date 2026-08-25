@@ -3,10 +3,9 @@
 
 import argparse
 import json
-from pathlib import Path
 import sys
 import time
-from typing import Optional
+from pathlib import Path
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -15,10 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import cv2
 import numpy as np
-from src.object_detection import (
+
+from proctoring.detection import (
     ObjectDetector,
     ObjectRelevanceFilter,
-    ProctoringDetectionReport,
     VideoObjectAnalyzer,
 )
 
@@ -32,6 +31,7 @@ def print_environment_diagnostics() -> None:
 
     try:
         import torch
+
         print(f"PyTorch Version:     {torch.__version__}")
         print(f"CUDA Available:      {torch.cuda.is_available()}")
         if torch.cuda.is_available():
@@ -45,6 +45,7 @@ def print_environment_diagnostics() -> None:
 
     try:
         import ultralytics
+
         print(f"Ultralytics Version: {ultralytics.__version__}")
     except ImportError:
         print("Ultralytics:         Not installed")
@@ -93,7 +94,9 @@ def run_image_benchmark(
     approx_fps = 1000.0 / avg_total_ms if avg_total_ms > 0 else 0.0
 
     print("IMAGE BENCHMARK PERFORMANCE METRICS:")
-    print(f"  • Model Inference (Avg):  {avg_infer_ms:6.2f} ms [Min: {min_infer_ms:6.2f} ms, Max: {max_infer_ms:6.2f} ms]")
+    print(
+        f"  • Model Inference (Avg):  {avg_infer_ms:6.2f} ms [Min: {min_infer_ms:6.2f} ms, Max: {max_infer_ms:6.2f} ms]"
+    )
     print(f"  • Total Pipeline (Avg):   {avg_total_ms:6.2f} ms")
     print(f"  • Approximate Throughput: {approx_fps:6.1f} FPS")
     print("=" * 60)
@@ -109,11 +112,11 @@ def run_video_pipeline(
     show_all: bool = False,
     save_frames: bool = False,
     frames_dir: Path = Path("data/results/object_detection/video/frames/"),
-    plot_timeline: Optional[Path] = None,
+    plot_timeline: Path | None = None,
     save_evidence: bool = False,
     evidence_dir: Path = Path("data/results/object_detection/evidence"),
     zip_evidence: bool = False,
-    json_path: Optional[Path] = None,
+    json_path: Path | None = None,
 ) -> None:
     """Run full video frame sampling, temporal analysis, and evidence packaging on Kaggle GPU."""
     analyzer = VideoObjectAnalyzer(
@@ -128,7 +131,9 @@ def run_video_pipeline(
     save_dir = frames_dir if save_frames else None
     ev_dir = evidence_dir if save_evidence else None
 
-    print(f"\nProcessing video stream on {detector.device.upper()}: {video_path.name} at {sample_fps} FPS sampling rate...")
+    print(
+        f"\nProcessing video stream on {detector.device.upper()}: {video_path.name} at {sample_fps} FPS sampling rate..."
+    )
     report = analyzer.analyze_video(
         video_path=video_path,
         target_sampling_fps=sample_fps,
@@ -146,13 +151,17 @@ def run_video_pipeline(
     print(f"Video File:          {Path(report.video_path).name} ({meta.width}x{meta.height})")
     print(f"Source FPS:          {meta.source_fps:.2f}")
     print(f"Total Video Frames:  {meta.total_frames} (Duration: {meta.duration_seconds:.2f}s)")
-    print(f"Sampled Frames:      {report.total_sampled_frames} frames (at {report.target_sampling_fps} FPS)")
+    print(
+        f"Sampled Frames:      {report.total_sampled_frames} frames (at {report.target_sampling_fps} FPS)"
+    )
     print(f"Execution Device:    {detector.device.upper()}")
     print("-" * 60)
     print("CONSOLIDATED TEMPORAL EVENTS:")
     for ev in report.temporal_events:
         qual_str = "[Qualified]" if ev.is_duration_qualified else "[Short-Lived]"
-        print(f"  • {ev.object_class:15s} {ev.formatted_start} → {ev.formatted_end} (Duration: {ev.duration_seconds:4.1f}s, Max Conf: {ev.max_confidence:.2f}) {qual_str}")
+        print(
+            f"  • {ev.object_class:15s} {ev.formatted_start} → {ev.formatted_end} (Duration: {ev.duration_seconds:4.1f}s, Max Conf: {ev.max_confidence:.2f}) {qual_str}"
+        )
     if not report.temporal_events:
         print("  (None)")
 
@@ -353,7 +362,9 @@ def main() -> int:
         return 0
 
     # 4. Single Image Execution (Default Fallback)
-    image_path = Path(args.image) if args.image else Path("data/samples/Colin_Powell/Colin_Powell_0001.jpg")
+    image_path = (
+        Path(args.image) if args.image else Path("data/samples/Colin_Powell/Colin_Powell_0001.jpg")
+    )
     if not image_path.exists():
         fallback_candidates = [
             Path("data/samples/Colin_Powell/Colin_Powell_0001.jpg"),
@@ -382,7 +393,9 @@ def main() -> int:
     print(f"Person Count:        {report.person_count}")
     print(f"Relevant Detections: {report.relevant_count}")
     for obj in report.relevant_objects:
-        print(f"  • {obj.class_name:16s}: {obj.confidence:.4f} [x1={obj.x1}, y1={obj.y1}, x2={obj.x2}, y2={obj.y2}]")
+        print(
+            f"  • {obj.class_name:16s}: {obj.confidence:.4f} [x1={obj.x1}, y1={obj.y1}, x2={obj.x2}, y2={obj.y2}]"
+        )
     print("------------------------------------------------------------")
 
     out_path = Path(args.output)

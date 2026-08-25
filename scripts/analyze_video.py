@@ -3,17 +3,15 @@
 
 import argparse
 import json
-from pathlib import Path
 import sys
-import time
-from typing import Optional
+from pathlib import Path
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.object_detection import (
+from proctoring.detection import (
     ObjectDetector,
     ObjectRelevanceFilter,
     VideoObjectAnalyzer,
@@ -31,11 +29,11 @@ def run_video_analysis(
     show_all: bool = False,
     save_frames: bool = False,
     frames_dir: Path = Path("data/results/object_detection/video/frames/"),
-    plot_timeline: Optional[Path] = None,
+    plot_timeline: Path | None = None,
     save_evidence: bool = False,
     evidence_dir: Path = Path("data/results/object_detection/evidence"),
     zip_evidence: bool = False,
-    json_path: Optional[Path] = None,
+    json_path: Path | None = None,
 ) -> int:
     """Execute video sampling, object detection, temporal analysis, and evidence packaging."""
     if not video_path.exists():
@@ -96,7 +94,9 @@ def run_video_analysis(
     else:
         for ev in report.temporal_events:
             qual_str = "[Qualified]" if ev.is_duration_qualified else "[Short-Lived]"
-            print(f"  • {ev.object_class:15s} {ev.formatted_start} → {ev.formatted_end} (Duration: {ev.duration_seconds:4.1f}s, {ev.detection_count:2d} samples, Max Conf: {ev.max_confidence:.2f}) {qual_str}")
+            print(
+                f"  • {ev.object_class:15s} {ev.formatted_start} → {ev.formatted_end} (Duration: {ev.duration_seconds:4.1f}s, {ev.detection_count:2d} samples, Max Conf: {ev.max_confidence:.2f}) {qual_str}"
+            )
 
     print("------------------------------------------------------------")
     print("PERSON COUNT TRANSITIONS:")
@@ -104,15 +104,21 @@ def run_video_analysis(
         print("  (No person count transitions observed — stable presence)")
     else:
         for chg in report.person_count_changes:
-            print(f"  [{chg.formatted_timestamp}] Person Count Changed: {chg.previous_count} → {chg.new_count} (Frame: {chg.frame_index:5d})")
+            print(
+                f"  [{chg.formatted_timestamp}] Person Count Changed: {chg.previous_count} → {chg.new_count} (Frame: {chg.frame_index:5d})"
+            )
 
     print("------------------------------------------------------------")
     print("RAW TIMELINE EVIDENCE (Sample of frames):")
     for entry in report.timeline[:8]:
-        rel_str = ", ".join([f"{o.class_name} ({o.confidence:.2f})" for o in entry.relevant_objects])
+        rel_str = ", ".join(
+            [f"{o.class_name} ({o.confidence:.2f})" for o in entry.relevant_objects]
+        )
         if not rel_str:
             rel_str = "(none)"
-        print(f"  [{entry.formatted_timestamp}] Frame {entry.frame_index:5d} | Persons: {entry.person_count} | Relevant: {rel_str}")
+        print(
+            f"  [{entry.formatted_timestamp}] Frame {entry.frame_index:5d} | Persons: {entry.person_count} | Relevant: {rel_str}"
+        )
     if len(report.timeline) > 8:
         print(f"  ... and {len(report.timeline) - 8} more sampled frames in raw timeline.")
 

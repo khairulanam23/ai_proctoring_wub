@@ -2,9 +2,9 @@
 """Utility script to generate controlled multi-face test images and transition test videos."""
 
 from pathlib import Path
-import sys
-import numpy as np
+
 import cv2
+import numpy as np
 
 
 def generate_synthetic_media(
@@ -33,7 +33,9 @@ def generate_synthetic_media(
     tb_imgs = list(samples_dir.glob("Tony_Blair/*.jpg"))
 
     if not cp_imgs or not gwb_imgs:
-        print("Warning: Sample images not found in data/samples. Skipping multi-face canvas generation.")
+        print(
+            "Warning: Sample images not found in data/samples. Skipping multi-face canvas generation."
+        )
         return
 
     img_a = cv2.imread(str(cp_imgs[0]))

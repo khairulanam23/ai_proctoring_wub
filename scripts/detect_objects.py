@@ -3,9 +3,8 @@
 
 import argparse
 import json
-from pathlib import Path
 import sys
-import time
+from pathlib import Path
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -13,10 +12,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import cv2
-from src.object_detection import (
+
+from proctoring.detection import (
     ObjectDetector,
     ObjectRelevanceFilter,
-    ProctoringDetectionReport,
 )
 
 
@@ -67,10 +66,14 @@ def run_detection(
         print("============================================================")
         print(f"Model:               {raw_result.model_name}")
         print(f"Device:              {raw_result.device}")
-        print(f"Image:               {image_path.name} ({report.image_width}x{report.image_height})")
+        print(
+            f"Image:               {image_path.name} ({report.image_width}x{report.image_height})"
+        )
         print(f"Inference Latency:   {report.inference_time_ms:.2f} ms")
         print(f"Person Count:        {report.person_count}")
-        print(f"Relevant Objects:    {report.relevant_count} / {report.total_detections} total detected")
+        print(
+            f"Relevant Objects:    {report.relevant_count} / {report.total_detections} total detected"
+        )
         print("------------------------------------------------------------")
 
         print("Relevant Proctoring Objects:")
@@ -78,12 +81,16 @@ def run_detection(
             print("  (None)")
         else:
             for obj in report.relevant_objects:
-                print(f"  • {obj.class_name:18s} {obj.confidence:.4f}  [bbox: ({obj.x1}, {obj.y1}, {obj.x2}, {obj.y2})]")
+                print(
+                    f"  • {obj.class_name:18s} {obj.confidence:.4f}  [bbox: ({obj.x1}, {obj.y1}, {obj.x2}, {obj.y2})]"
+                )
 
         if report.ignored_objects:
             print("\nIgnored / Background Objects:")
             for obj in report.ignored_objects:
-                print(f"  - {obj.class_name:18s} {obj.confidence:.4f}  [Filtered: non-relevant or below threshold]")
+                print(
+                    f"  - {obj.class_name:18s} {obj.confidence:.4f}  [Filtered: non-relevant or below threshold]"
+                )
 
         print("============================================================")
 
@@ -92,7 +99,9 @@ def run_detection(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_path), vis_image)
     if not output_json:
-        mode_str = " (Debug Mode: showing all detections)" if show_all else " (Relevant objects only)"
+        mode_str = (
+            " (Debug Mode: showing all detections)" if show_all else " (Relevant objects only)"
+        )
         print(f"Visualization saved to: {output_path}{mode_str}")
 
     return 0

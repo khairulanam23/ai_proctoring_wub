@@ -2,9 +2,8 @@
 """CLI script for single-pair and multi-reference face verification experiments."""
 
 import argparse
-from pathlib import Path
 import sys
-from typing import List
+from pathlib import Path
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -12,7 +11,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import cv2
-from src.face import FaceDetector, FacePreprocessor, FaceVerifier
+
+from proctoring.detection import FaceDetector, FacePreprocessor, FaceVerifier
 
 
 def main() -> int:
@@ -61,7 +61,7 @@ def main() -> int:
     args = parser.parse_args()
 
     # Determine reference and test image paths
-    ref_paths: List[Path] = []
+    ref_paths: list[Path] = []
     test_path: Path
 
     if args.ref and args.test:
@@ -72,7 +72,10 @@ def main() -> int:
         test_path = Path(args.images[-1])
     else:
         parser.print_help()
-        print("\nError: Please provide at least one reference image and one test image.", file=sys.stderr)
+        print(
+            "\nError: Please provide at least one reference image and one test image.",
+            file=sys.stderr,
+        )
         return 1
 
     # Validate file paths
@@ -92,7 +95,9 @@ def main() -> int:
 
     detector = FaceDetector()
     preprocessor = FacePreprocessor(detector=detector, illumination_mode=args.illumination)
-    verifier = FaceVerifier(detector=detector, preprocessor=preprocessor, default_threshold=args.threshold)
+    verifier = FaceVerifier(
+        detector=detector, preprocessor=preprocessor, default_threshold=args.threshold
+    )
 
     # 1. Single Reference Case
     if len(ref_paths) == 1:
@@ -114,7 +119,7 @@ def main() -> int:
         print("------------------------------------------------------------")
 
         if not result.success:
-            print(f"Status:                    REJECTED")
+            print("Status:                    REJECTED")
             print(f"Reason:                    {result.message}")
             print("============================================================")
             return 2
@@ -124,12 +129,20 @@ def main() -> int:
             qt = result.test_preprocessing.quality
             pr = qr.pose if qr else None
             pt = qt.pose if qt else None
-            print(f"Ref Quality:               Status={result.ref_preprocessing.status.value}, Conf={qr.confidence:.3f}, Blur={qr.blur_score:.1f}")
+            print(
+                f"Ref Quality:               Status={result.ref_preprocessing.status.value}, Conf={qr.confidence:.3f}, Blur={qr.blur_score:.1f}"
+            )
             if pr:
-                print(f"Ref Pose:                  YawRatio={pr.yaw_ratio:.2f}, Roll={pr.roll_angle_deg:.1f}°")
-            print(f"Test Quality:              Status={result.test_preprocessing.status.value}, Conf={qt.confidence:.3f}, Blur={qt.blur_score:.1f}")
+                print(
+                    f"Ref Pose:                  YawRatio={pr.yaw_ratio:.2f}, Roll={pr.roll_angle_deg:.1f}°"
+                )
+            print(
+                f"Test Quality:              Status={result.test_preprocessing.status.value}, Conf={qt.confidence:.3f}, Blur={qt.blur_score:.1f}"
+            )
             if pt:
-                print(f"Test Pose:                 YawRatio={pt.yaw_ratio:.2f}, Roll={pt.roll_angle_deg:.1f}°")
+                print(
+                    f"Test Pose:                 YawRatio={pt.yaw_ratio:.2f}, Roll={pt.roll_angle_deg:.1f}°"
+                )
             print("------------------------------------------------------------")
 
         decision = "SAME PERSON" if result.same_person else "DIFFERENT PERSON"
@@ -144,47 +157,46 @@ def main() -> int:
         return 0
 
     # 2. Multi-Reference Enrollment Case
-    else:
-        ref_imgs = []
-        for rp in ref_paths:
-            img = cv2.imread(str(rp))
-            if img is not None:
-                ref_imgs.append(img)
+    ref_imgs = []
+    for rp in ref_paths:
+        img = cv2.imread(str(rp))
+        if img is not None:
+            ref_imgs.append(img)
 
-        m_res = verifier.verify_multi_reference(
-            reference_images=ref_imgs,
-            test_image=test_img,
-            threshold=args.threshold,
-            metric=args.metric,
-        )
+    m_res = verifier.verify_multi_reference(
+        reference_images=ref_imgs,
+        test_image=test_img,
+        threshold=args.threshold,
+        metric=args.metric,
+    )
 
+    print("============================================================")
+    print("FACE VERIFICATION REPORT (MULTI-IMAGE ENROLLMENT)")
+    print("============================================================")
+    print(f"Total Enrolled References: {m_res.total_reference_count}")
+    print(f"Valid Quality References:  {m_res.valid_reference_count}")
+    print(f"Test Image:                {test_path.name}")
+    print("------------------------------------------------------------")
+
+    if not m_res.success:
+        print("Status:                    REJECTED")
+        print(f"Reason:                    {m_res.message}")
         print("============================================================")
-        print("FACE VERIFICATION REPORT (MULTI-IMAGE ENROLLMENT)")
-        print("============================================================")
-        print(f"Total Enrolled References: {m_res.total_reference_count}")
-        print(f"Valid Quality References:  {m_res.valid_reference_count}")
-        print(f"Test Image:                {test_path.name}")
-        print("------------------------------------------------------------")
+        return 2
 
-        if not m_res.success:
-            print(f"Status:                    REJECTED")
-            print(f"Reason:                    {m_res.message}")
-            print("============================================================")
-            return 2
-
-        decision = "SAME PERSON" if m_res.same_person else "DIFFERENT PERSON"
-        print(f"Individual Match Scores:   {[round(s, 4) for s in m_res.individual_scores]}")
-        print(f"Template Similarity:       {m_res.template_similarity:.4f}")
-        print(f"Maximum Match Similarity:  {m_res.max_similarity:.4f}")
-        print(f"Combined Robust Score:     {m_res.similarity:.4f}")
-        print(f"Calibrated Threshold:      {m_res.threshold:.4f}")
-        print(f"Decision:                  {decision}")
-        print("============================================================")
-        if m_res.timing_ms:
-            print("\nLatency Profile (CPU):")
-            for k, v in m_res.timing_ms.items():
-                print(f"  - {k:25s}: {v:6.2f} ms")
-        return 0
+    decision = "SAME PERSON" if m_res.same_person else "DIFFERENT PERSON"
+    print(f"Individual Match Scores:   {[round(s, 4) for s in m_res.individual_scores]}")
+    print(f"Template Similarity:       {m_res.template_similarity:.4f}")
+    print(f"Maximum Match Similarity:  {m_res.max_similarity:.4f}")
+    print(f"Combined Robust Score:     {m_res.similarity:.4f}")
+    print(f"Calibrated Threshold:      {m_res.threshold:.4f}")
+    print(f"Decision:                  {decision}")
+    print("============================================================")
+    if m_res.timing_ms:
+        print("\nLatency Profile (CPU):")
+        for k, v in m_res.timing_ms.items():
+            print(f"  - {k:25s}: {v:6.2f} ms")
+    return 0
 
 
 if __name__ == "__main__":
