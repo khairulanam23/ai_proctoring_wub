@@ -9,6 +9,19 @@ it, and how to tune it for your examinations.
 
 ---
 
+## 0. What the system will not do
+
+It produces no risk score, no cheating probability, no suspiciousness percentage and
+no automated decision. It records observations and evidence; a human invigilator
+decides what they mean.
+
+Equipment faults are held apart from candidate behaviour structurally, not by
+convention: every event carries a `category` of `CANDIDATE_OBSERVATION` or
+`TECHNICAL_DIAGNOSTIC`, and the two are counted separately everywhere they surface.
+A failed detector yields `NOT_MEASURED`, never `NO_FACE`.
+
+---
+
 ## 1. Scope of what has been measured
 
 Being precise about this matters, because the two are often conflated:
@@ -16,7 +29,7 @@ Being precise about this matters, because the two are often conflated:
 | | Status |
 |---|---|
 | **Speed / throughput / memory** | **Measured.** Every number in §3 comes from `scripts/benchmark_pipeline.py` on the hardware named there. Reproduce with one command. |
-| **Correctness of the pipeline logic** | **Tested.** 259 automated tests cover temporal qualification, evidence provenance, package integrity, policy gating, the LMS boundary, and every defect found in the codebase audit. |
+| **Correctness of the pipeline logic** | **Tested.** 288 automated tests cover temporal qualification, evidence provenance, package integrity, policy gating, the LMS boundary, and every defect found in the codebase audit. |
 | **Detection accuracy (precision / recall)** | **Not quantified.** No labelled proctoring dataset with ground-truth "was this candidate actually speaking / wearing an earbud" has been evaluated. |
 
 The reliability ratings in §4 are **engineering judgement** based on the sensor
@@ -52,20 +65,37 @@ is verifiably absent. Verifying only single faces left the impostor case unanswe
 "the candidate plus a helper" and "two strangers, candidate gone" produced identical
 output.
 
-### Speech articulation — MediaPipe Face Landmarker
-Reads 52 blendshape activations (`jawOpen`, `mouthFunnel`, `mouthPucker`, …) and
-scores the **movement** of mouth activation across a rolling 8-frame window, not its
-instantaneous value.
+### Speech-like mouth activity — MediaPipe Face Landmarker
+An articulation index is built from `jawOpen`, with `mouthFunnel` / `mouthPucker` /
+`mouthStretch*` added at reduced weight so close-lipped speech stays visible. Three
+conditions must hold together across a rolling window (`speech_window_seconds`,
+default 3 s):
 
-Two conditions must both hold before speech is declared:
-1. Mean absolute frame-to-frame change exceeds `speech_movement_threshold`.
-2. The series reverses direction at least `speech_min_oscillations` times.
+1. **Amplitude** — the robust swing (p90 − p10) exceeds
+   `speech_articulation_amplitude`. Rules out a still face and expression drift.
+2. **Crossings** — the index crosses its own mid-level at least
+   `speech_min_crossings` times. This is what separates speech from a yawn: a yawn
+   crosses twice however deep it is, continuous articulation crosses repeatedly.
+3. **Returns to closed** — the mouth comes back down near the window minimum. A
+   yawn, a smile and a resting open mouth all hold a level instead.
 
-The second condition is what separates speech from a yawn: a yawn is one slow
-monotonic jaw drop with large total movement and no reversals. A candidate sitting
-with their mouth open scores zero, because nothing is changing.
+> **Fixed defect.** The previous implementation averaged six blendshapes flat,
+> including `mouthClose` — which rises as the jaw closes and therefore cancelled the
+> signal being measured. The mean swung a few hundredths during clear speech, far
+> below any usable threshold, so speaking was almost never reported.
 
-**There is no audio.** This is lip movement only.
+> **Fixed defect — sampling.** Speech articulates at roughly 3–5 Hz. Sampled at the
+> old 4 fps default it aliased into a slow wave shaped exactly like a yawn: measured
+> over a 3 s window, talking and yawning both produced **one** mid-level crossing.
+> No threshold can separate them, because the information is gone before any
+> threshold sees it. Sessions that report speaking therefore raise their sampling
+> rate — including the adaptive idle rate — to `speech_min_sampling_fps` (default 6),
+> and the manifest records that they did. Below that floor the analyzer reports
+> **not measured** rather than **not speaking**: a rate that makes the measurement
+> impossible must never read as a candidate who was observed and found silent.
+
+**There is no audio.** This is lip movement only, and the observation is worded as
+*possible talking* for exactly that reason.
 
 Produces `CANDIDATE_SPEAKING`.
 
@@ -81,7 +111,26 @@ landmarks (468–477).
 > now asserts that a pure yaw rotation moves yaw only, and that real frontal
 > portraits never trip the looking-away threshold.
 
-Produces `LOOKING_AWAY`, `GAZE_OFF_SCREEN`.
+Produces `LOOKING_AWAY`, `GAZE_OFF_SCREEN`, `SUSPICIOUS_HEAD_POSE`.
+
+**Movement patterns, not just angles.** A single threshold on yaw answers only "is
+the head turned right now", which is not the question a proctor has: a candidate who
+turned once to answer the door and one who checks the same spot every twenty seconds
+read identically. `HeadMovementTracker` keeps a rolling window
+(`head_pattern_window_seconds`, default 20 s) and derives how long the current turn
+has been held, how many *separate* deviation episodes occurred, and how many rapid
+direction reversals happened above `head_reversal_velocity_deg_per_s`. Enough
+repeated episodes or fast reversals produce `SUSPICIOUS_HEAD_POSE` — an observation
+about a *pattern*, distinct from any single `LOOKING_AWAY`. Whether a given pose
+counts as deviating is still decided by `ExamPolicy`, so `PHYSICAL_PAPER` mode's
+allowance for looking down at paper is honoured without the thresholds existing in
+two places.
+
+**Gaze corroboration.** When gaze is displaced meaningfully in the same direction as
+the head turn, the recorded confidence rises and the observation text says so. Head
+orientation alone is the weakest attention signal; two independent measurements
+agreeing is materially stronger, and a flat confidence of 1.0 for every case told a
+proctor nothing.
 
 **Per-candidate calibration.** `FacialDynamicsAnalyzer.calibrate(frames)` learns the
 candidate's neutral yaw, pitch and gaze from a short "look at your screen normally"
@@ -92,6 +141,13 @@ second monitor, a candidate sitting off to one side. Calibration is *rejected* i
 samples disagree by more than 12° of standard deviation, because a candidate who moved
 during calibration has not given a usable neutral pose and averaging it would bake
 their movement into every later reading.
+
+> **Fixed defect.** The baseline was measured and then thrown away. The reporting
+> layer re-evaluated head pose against a hard-coded zero, so calibration corrected
+> nothing a proctor ever saw and an off-centre camera still produced constant
+> `LOOKING_AWAY`. The baseline the analyzer applied is now published on the result
+> and used by the reporting layer, pinned by
+> `tests/analysis/test_detection_accuracy.py`.
 
 ### Liveness — MediaPipe Face Landmarker
 
@@ -145,6 +201,31 @@ regions** derived from the face landmarks; a candidate box nowhere near an ear i
 discarded outright, which removes the bulk of spurious earbud boxes fired by
 earrings and hair clips.
 
+**Two passes.** At typical webcam framing an in-ear bud is on the order of fifteen
+pixels wide — below what the detector resolves on a full frame, which is why a
+full-frame sweep alone reported headphones well and earbuds essentially never. Each
+ear region is therefore cropped and upscaled to `ear_roi_target_px` (default 320) and
+re-examined. Boxes found in a crop are mapped back into frame coordinates and are
+ear-anchored by construction. This is the single largest recall improvement available
+without changing models, and it roughly doubles the cost of a sweep (measured: 260 ms
+full-frame, 465 ms with both ears) — see §3.
+
+> **Fixed defect — ear regions.** Each region used to be a small square centred on
+> one face-silhouette landmark. That landmark sits on the *attachment* line of the
+> ear, so a bud in the canal, a hook over the top of the ear and a headset earpiece
+> all fell outside it — and anything outside is discarded. Genuine detections were
+> being thrown away by the filter meant to protect against false ones. Regions are
+> now built from the whole visible ear perimeter plus `ear_region_padding_ratio`.
+
+**Confirmation across sweeps.** A worn device is reported only once
+`wearable_confirmation_sweeps` (default 2) detection sweeps agree, counted per
+*sweep* rather than per frame — the carried-forward result is re-presented on every
+skipped frame, so counting frames would let one marginal detection stuff the ballot.
+A hand at the ear in the same frame, seen independently by the hand analyzer, lowers
+the requirement by one sweep for earpieces only. It never creates a detection on its
+own, and it cannot lift an earbud above "medium" reliability: two weak signals
+agreeing is still not proof.
+
 Produces `HEADPHONES_DETECTED`, `EARBUDS_SUSPECTED`, `SMARTWATCH_DETECTED`.
 
 ---
@@ -164,7 +245,8 @@ Reproduce with `python scripts/benchmark_pipeline.py --wearables`.
 | Facial dynamics (speech/pose/gaze) | 14.4 ms | 22.5 ms | One model yields all three signals |
 | Hand analysis | 17.0 ms | 31.3 ms | Every frame |
 | Object detection (YOLO11n) | 91.0 ms | 107.0 ms | The expensive optional stage |
-| **Wearable detection (YOLO-World)** | **237.3 ms** | **264.7 ms** | ~14× the landmark models |
+| **Wearable detection (YOLO-World), full frame** | **237.3 ms** | **264.7 ms** | ~14× the landmark models |
+| **Wearable detection, + ear-region zoom pass** | **~465 ms** | — | Two extra small inferences; what makes earbuds detectable |
 
 The shape of that table drives the whole design. Face, hands, speech, pose and gaze
 together cost about **56 ms** — the entire behavioural capability is cheaper than
@@ -172,7 +254,10 @@ one YOLO pass. Wearable detection alone costs more than everything else combined
 which is why it is **off by default** and, when on, runs once every
 `wearable_detection_interval_frames` (default 8) rather than every frame. A device
 worn during an exam stays on for minutes; sampling it every two seconds loses
-nothing.
+nothing. That interval is held at two seconds of wall clock: if the sampling rate is
+raised for speech measurement, the frame interval is scaled to match, so the most
+expensive detector in the pipeline does not become more frequent as a side effect of
+an unrelated setting.
 
 ### End-to-end session throughput
 
@@ -244,6 +329,28 @@ The pipeline handles this by refusing to overstate it:
 If earpiece detection is critical to your examinations, the honest answer is a
 custom-trained detector on your own imagery, not this one.
 
+The ear-region zoom pass and the sweep-confirmation requirement both raise how often
+a real earpiece is found and how much agreement is needed before it is reported. They
+do not turn this into a reliable detection, and nothing here has been measured against
+labelled ground truth. `EARBUDS_SUSPECTED` stays `MEDIUM` severity with an inline
+reliability note for that reason.
+
+### Verifying it on your own camera
+
+Detection quality depends on your camera, lighting and framing far more than on any
+threshold in this document. Before relying on any of it, run the guided check:
+
+```bash
+python scripts/validate_detection.py                    # every scenario
+python scripts/validate_detection.py --group earphone   # one behaviour
+python scripts/validate_detection.py --list
+```
+
+It walks through the behaviours and, just as importantly, their innocent lookalikes —
+a yawn, a single glance, reading silently, looking down at paper — and reports what
+the pipeline concluded for each. A scenario that cannot run (no YOLO-World weights,
+no camera) is reported as **skipped**, never as passed.
+
 ---
 
 ## 5. Strictness levels
@@ -252,18 +359,30 @@ Set with `--strictness` on the CLI or `strictness` in `SessionConfig`.
 
 | | STANDARD | STRICT | MAXIMUM |
 |---|---|---|---|
-| Reportable observations | 9 | 15 | 18 |
+| Reportable observations | 12 | 20 | 23 |
 | Default qualification | 2.0 s | 1.5 s | 1.0 s |
 | Absence tolerance | 1.5 s | 1.0 s | 0.75 s |
-| Yaw limit | 40° | 32° | 28° |
-| Speaking | — | ✓ | ✓ |
+| Yaw limit | 40° | 28° | 24° |
+| Sampling rate | 4 fps | 6 fps | 6 fps |
+| Possible talking | — | ✓ | ✓ |
 | Looking away | — | ✓ | ✓ |
+| Repeated head movement | — | ✓ | ✓ |
 | Hand at ear | — | ✓ | ✓ |
 | Earbuds suspected | — | ✓ | ✓ |
 | Liveness (no blink) | — | ✓ | ✓ |
 | Hand near face | — | — | ✓ |
 | Hands not visible | — | — | ✓ |
 | Gaze off screen | — | — | ✓ |
+
+`STRICT` and `MAXIMUM` sample at 6 fps rather than 4 because they report speech-like
+mouth activity, which is not measurable below that rate — see §2. `STANDARD` does not
+report it and keeps the cheaper 4 fps.
+
+The yaw limits at `STRICT` and `MAXIMUM` are lower than they were (32°/28°). A single
+frame past the limit no longer means anything on its own: deviations must persist to
+qualify, and repeated short deviations are reported as a pattern rather than as
+isolated events, so the angle can sit closer to where a candidate genuinely stops
+looking at their screen.
 
 The levels are strictly nested — each reports everything the level below does — and
 this is enforced by test.

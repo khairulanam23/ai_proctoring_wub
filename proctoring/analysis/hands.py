@@ -62,8 +62,19 @@ class HandAnalysisResult:
     hand_near_mouth: bool = False
     hands_visible: bool | None = None
 
+    hand_in_writing_area: bool = False
+    """True when at least one hand is positioned in the lower desk/writing quadrant."""
+    writing_posture_detected: bool = False
+    """True when hands are resting/active in writing area without obscuring face."""
+    unusual_movement: bool = False
+    """True when rapid hand movement dynamics are detected across consecutive frames."""
+
     nearest_hand_distance_ratio: float | None = None
     """Distance from the closest hand to the face centre, in face widths."""
+    distance_to_mouth_ratio: float | None = None
+    """Distance from the closest hand point to the mouth center, in face widths."""
+    distance_to_ear_ratio: float | None = None
+    """Distance from the closest hand point to the nearest ear region, in face widths."""
 
     inference_ms: float = 0.0
 
@@ -75,9 +86,22 @@ class HandAnalysisResult:
             "hand_near_ear": self.hand_near_ear,
             "hand_near_mouth": self.hand_near_mouth,
             "hands_visible": self.hands_visible,
+            "hand_in_writing_area": self.hand_in_writing_area,
+            "writing_posture_detected": self.writing_posture_detected,
+            "unusual_movement": self.unusual_movement,
             "nearest_hand_distance_ratio": (
                 round(self.nearest_hand_distance_ratio, 3)
                 if self.nearest_hand_distance_ratio is not None
+                else None
+            ),
+            "distance_to_mouth_ratio": (
+                round(self.distance_to_mouth_ratio, 3)
+                if self.distance_to_mouth_ratio is not None
+                else None
+            ),
+            "distance_to_ear_ratio": (
+                round(self.distance_to_ear_ratio, 3)
+                if self.distance_to_ear_ratio is not None
                 else None
             ),
             "inference_ms": round(self.inference_ms, 2),
@@ -96,6 +120,7 @@ class HandAnalyzer:
         min_detection_confidence: float = 0.5,
         face_proximity_ratio: float = 1.0,
         ear_proximity_ratio: float = 0.55,
+        writing_area_top_ratio: float = 0.45,
     ) -> None:
         """
         Args:
@@ -103,13 +128,17 @@ class HandAnalyzer:
                 centre counts as "near the face".
             ear_proximity_ratio: Tighter radius, measured from each ear region, for
                 the more specific "hand at the ear" observation.
+            writing_area_top_ratio: Normalized vertical threshold (from frame top)
+                below which hands are considered in the desk/writing workspace.
         """
         self.model_path = Path(model_path)
         self.max_hands = int(max_hands)
         self.min_detection_confidence = float(min_detection_confidence)
         self.face_proximity_ratio = float(face_proximity_ratio)
         self.ear_proximity_ratio = float(ear_proximity_ratio)
+        self.writing_area_top_ratio = float(writing_area_top_ratio)
 
+        self._last_centroids: list[tuple[int, int]] = []
         self._landmarker = None
         self._mp = None
         self.is_available = self._load()
@@ -210,9 +239,41 @@ class HandAnalyzer:
         result.hands_detected = len(result.hands)
         result.hands_visible = len(result.hands) > 0
 
+        # Check writing area and hand motion dynamics
+        current_centroids: list[tuple[int, int]] = []
+        for hand in result.hands:
+            current_centroids.append(hand.centroid)
+            # Desk/writing workspace vertical boundary
+            if hand.centroid[1] >= int(height * self.writing_area_top_ratio):
+                result.hand_in_writing_area = True
+
+        if self._last_centroids and current_centroids:
+            # Check maximum single-frame displacement across matched hands
+            max_disp = 0.0
+            for curr_c in current_centroids:
+                min_dist = min(
+                    float(np.hypot(curr_c[0] - prev_c[0], curr_c[1] - prev_c[1]))
+                    for prev_c in self._last_centroids
+                )
+                max_disp = max(max_disp, min_dist)
+            if max_disp > (0.35 * width):
+                result.unusual_movement = True
+
+        self._last_centroids = current_centroids
+
         if face_bbox is not None and result.hands:
             self._relate_to_face(result, face_bbox, ear_regions or [], mouth_region)
+            # Writing posture: hand in desk/writing zone without covering face
+            if result.hand_in_writing_area and not result.hand_near_face:
+                result.writing_posture_detected = True
+        elif result.hand_in_writing_area:
+            result.writing_posture_detected = True
+
         return result
+
+    def reset(self) -> None:
+        """Reset temporal state between exam sessions."""
+        self._last_centroids = []
 
     def _relate_to_face(
         self,
@@ -230,19 +291,51 @@ class HandAnalyzer:
         face_centre = np.array([(fx1 + fx2) / 2.0, (fy1 + fy2) / 2.0])
         face_width = max(1.0, float(fx2 - fx1))
 
-        distances = []
+        face_distances: list[float] = []
+        mouth_distances: list[float] = []
+        ear_distances: list[float] = []
+
+        mouth_centre = (
+            np.array(
+                [
+                    (mouth_region[0] + mouth_region[2]) / 2.0,
+                    (mouth_region[1] + mouth_region[3]) / 2.0,
+                ]
+            )
+            if mouth_region
+            else None
+        )
+        ear_centres = [np.array([(e[0] + e[2]) / 2.0, (e[1] + e[3]) / 2.0]) for e in ear_regions]
+
         for hand in result.hands:
             # Use the closest point of the hand, not its centroid: a hand reaching
             # toward the ear touches it with a fingertip long before its centre.
             candidate_points = [np.array(hand.centroid, dtype=np.float32)]
             candidate_points.extend(np.array(p, dtype=np.float32) for p in hand.fingertip_points)
 
-            distances.append(
+            face_distances.append(
                 min(
                     float(np.linalg.norm(point - face_centre)) / face_width
                     for point in candidate_points
                 )
             )
+
+            if mouth_centre is not None:
+                mouth_distances.append(
+                    min(
+                        float(np.linalg.norm(point - mouth_centre)) / face_width
+                        for point in candidate_points
+                    )
+                )
+
+            if ear_centres:
+                for ec in ear_centres:
+                    ear_distances.append(
+                        min(
+                            float(np.linalg.norm(point - ec)) / face_width
+                            for point in candidate_points
+                        )
+                    )
 
             for point in candidate_points:
                 if self._point_in_box(point, face_bbox, pad_ratio=0.15):
@@ -253,10 +346,16 @@ class HandAnalyzer:
                     if self._point_in_box(point, ear, pad_ratio=0.5):
                         result.hand_near_ear = True
 
-        if distances:
-            result.nearest_hand_distance_ratio = min(distances)
+        if face_distances:
+            result.nearest_hand_distance_ratio = min(face_distances)
             if result.nearest_hand_distance_ratio <= self.face_proximity_ratio:
                 result.hand_near_face = True
+
+        if mouth_distances:
+            result.distance_to_mouth_ratio = min(mouth_distances)
+
+        if ear_distances:
+            result.distance_to_ear_ratio = min(ear_distances)
 
     @staticmethod
     def _point_in_box(

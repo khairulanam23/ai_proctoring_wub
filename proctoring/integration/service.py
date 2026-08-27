@@ -219,6 +219,7 @@ class ProctoringService:
             detected_objects=observation.prohibited_object_names,
             detected_wearables=observation.wearable_names,
             active_observations=observation.active_event_types,
+            engine_state=engine.state.value,
             processing_latency_ms=observation.timing.total_frame_ms if observation.timing else 0.0,
             next_frame_due_in_seconds=1.0 / max(0.1, engine.target_fps),
         )
@@ -253,10 +254,54 @@ class ProctoringService:
             "recorded": True,
         }
 
+    def pause_session(self, session_id: str, reason: str = "Proctor pause") -> dict[str, Any]:
+        """Suspend processing for an attempt without ending it.
+
+        Paused frames are rejected before any inference runs, so a paused session
+        costs nothing. The pause is recorded on the event timeline as a technical
+        diagnostic, so the resulting gap in observations is explained rather than
+        left for a reviewer to interpret.
+        """
+        engine = self._require_engine(session_id)
+        with self._session_lock(session_id):
+            self._last_activity[session_id] = time.monotonic()
+            engine.pause(reason)
+
+        record = self.store.get(session_id)
+        if record is not None:
+            record.state = SessionState.PAUSED
+            self.store.put(record)
+        LOGGER.info("Session %s paused: %s", session_id, reason)
+        return {
+            "session_id": session_id,
+            "state": SessionState.PAUSED.value,
+            "engine_state": engine.state.value,
+            "reason": reason,
+        }
+
+    def resume_session(self, session_id: str, reason: str = "Proctor resume") -> dict[str, Any]:
+        """Resume processing after a pause."""
+        engine = self._require_engine(session_id)
+        with self._session_lock(session_id):
+            self._last_activity[session_id] = time.monotonic()
+            engine.resume(reason)
+
+        record = self.store.get(session_id)
+        if record is not None:
+            record.state = SessionState.ACTIVE
+            self.store.put(record)
+        LOGGER.info("Session %s resumed: %s", session_id, reason)
+        return {
+            "session_id": session_id,
+            "state": SessionState.ACTIVE.value,
+            "engine_state": engine.state.value,
+            "reason": reason,
+        }
+
     def finalize_session(self, session_id: str) -> SessionResult:
         """Close the attempt, seal the evidence package and release the engine."""
         engine = self._require_engine(session_id)
-        record = self.store.get(session_id)
+        record = self._require_record(session_id)
 
         record.state = SessionState.FINALIZING
         self.store.put(record)
@@ -304,7 +349,7 @@ class ProctoringService:
             f"Session ended before normal completion{f': {reason}' if reason else ''}. "
             "The record covers only the period captured."
         )
-        record = self.store.get(session_id)
+        record = self._require_record(session_id)
         record.state = SessionState.FAILED
         record.error = reason
         record.result = result.to_dict()
@@ -345,11 +390,15 @@ class ProctoringService:
             verifier = verifier or FaceVerifier(detector=detector)
 
         templates: list[np.ndarray] = []
+        reference_images: list[np.ndarray] = []
         rejected: list[str] = []
 
         for index, raw in enumerate(frames):
             try:
                 image = self._decode_frame(raw)
+                if image is None:
+                    rejected.append(f"frame {index}: could not be decoded or exceeded size limits")
+                    continue
                 detection = detector.detect(image)
                 if detection.count != 1:
                     rejected.append(
@@ -357,11 +406,15 @@ class ProctoringService:
                     )
                     continue
                 templates.append(verifier.extract_feature(image, face=detection.faces[0]))
+                reference_images.append(image)
             except Exception as exc:
                 rejected.append(f"frame {index}: {exc}")
 
         if templates:
-            self.store.save_enrolment(enrolment_id, templates)
+            # Store the photographs alongside the embeddings: a reference set that
+            # can be re-derived and inspected is auditable, one that is only a
+            # vector is not.
+            self.store.save_enrolment(enrolment_id, templates, images=reference_images)
 
         return {
             "enrolment_id": enrolment_id,
@@ -383,18 +436,14 @@ class ProctoringService:
 
     def get_review(self, session_id: str) -> ReviewPayload:
         """Assemble the invigilator review payload for a completed session."""
-        record = self.store.get(session_id)
-        if record is None:
-            raise ProctoringServiceError(f"Unknown session: {session_id}")
+        record = self._require_record(session_id)
 
+        # Rebuild from the stored rows, ignoring derived keys. ``to_dict`` emits
+        # convenience fields (``is_technical``) that are computed rather than stored,
+        # so a naive round-trip through the constructor would fail on them.
+        accepted = set(ObservationSummary.__dataclass_fields__)
         observations = [
-            ObservationSummary(
-                **{
-                    **row,
-                    "start_timestamp": row["start_timestamp"],
-                    "end_timestamp": row["end_timestamp"],
-                }
-            )
+            ObservationSummary(**{k: v for k, v in row.items() if k in accepted})
             for row in record.observations
         ]
 
@@ -411,15 +460,15 @@ class ProctoringService:
             reviewer_guidance=list(DEFAULT_REVIEWER_GUIDANCE),
         )
 
-    def list_sessions(self, attempt_id: str | None = None, user_id: str | None = None):
+    def list_sessions(
+        self, attempt_id: str | None = None, user_id: str | None = None
+    ) -> list[SessionRecord]:
         """List known sessions, optionally filtered by attempt or user."""
         return self.store.list(attempt_id=attempt_id, user_id=user_id)
 
     def get_state(self, session_id: str) -> SessionState:
-        record = self.store.get(session_id)
-        if record is None:
-            raise ProctoringServiceError(f"Unknown session: {session_id}")
-        return record.state
+        """Current attempt state for a session."""
+        return self._require_record(session_id).state
 
     # ------------------------------------------------------------------
     # Internals
@@ -436,8 +485,9 @@ class ProctoringService:
         reports that capability under ``unavailable_detectors`` so the host can tell
         a proctor what was not watched.
         """
-        if getattr(self, "_detector_cache", None) is not None:
-            return self._detector_cache
+        cached = self._detector_cache
+        if cached is not None:
+            return cached
 
         from proctoring.detection.face_detector import FaceDetector
         from proctoring.detection.face_verifier import FaceVerifier
@@ -518,6 +568,19 @@ class ProctoringService:
         with self._lock:
             return len(self._engines)
 
+    def _require_record(self, session_id: str) -> SessionRecord:
+        """Fetch a session record or fail with a clear error.
+
+        ``store.get`` legitimately returns ``None`` for an unknown or evicted
+        session. Reaching through that without checking turned a recoverable
+        "unknown session" into an ``AttributeError`` raised from the middle of
+        finalisation, which is both harder to diagnose and harder to handle.
+        """
+        record = self.store.get(session_id)
+        if record is None:
+            raise ProctoringServiceError(f"Unknown session: {session_id}")
+        return record
+
     def _require_engine(self, session_id: str) -> ProctoringEngine:
         with self._lock:
             engine = self._engines.get(session_id)
@@ -543,7 +606,11 @@ class ProctoringService:
         if frame is None:
             return None
         if isinstance(frame, np.ndarray):
-            return frame
+            # Arrays skip decoding, but they must not skip the size ceiling. An
+            # in-process caller — or a host that decodes before handing frames over —
+            # could otherwise submit an arbitrarily large raster and drive every
+            # detector across it.
+            return frame if ProctoringService._within_pixel_budget(frame) else None
 
         raw: bytes | None = None
         if isinstance(frame, (bytes, bytearray)):
@@ -571,13 +638,26 @@ class ProctoringService:
             return None
         # A small compressed file can decode to an enormous raster; check after
         # decoding as well as before.
-        if decoded.shape[0] * decoded.shape[1] > MAX_FRAME_PIXELS:
-            LOGGER.warning("Rejecting frame with %dx%d pixels", decoded.shape[1], decoded.shape[0])
-            return None
-        return decoded
+        return decoded if ProctoringService._within_pixel_budget(decoded) else None
 
     @staticmethod
-    def _detector_availability(engine: ProctoringEngine):
+    def _within_pixel_budget(frame: np.ndarray) -> bool:
+        """Reject rasters large enough to exhaust memory when run through detectors.
+
+        Applied to decoded and pre-decoded frames alike: an array handed straight to
+        the service would otherwise skip the ceiling entirely, and a single 9000x9000
+        submission is a quarter of a gigabyte before any detector touches it.
+        """
+        if frame.ndim < 2 or not frame.size:
+            return True  # malformed shapes are caught by the quality gate, with a reason
+        pixels = int(frame.shape[0]) * int(frame.shape[1])
+        if pixels > MAX_FRAME_PIXELS:
+            LOGGER.warning("Rejecting frame with %dx%d pixels", frame.shape[1], frame.shape[0])
+            return False
+        return True
+
+    @staticmethod
+    def _detector_availability(engine: ProctoringEngine) -> tuple[list[str], list[str]]:
         """Report which observation capabilities this session actually has."""
         checks = [
             ("face_detection", engine.face_detector is not None),
@@ -610,6 +690,8 @@ class ProctoringService:
         counts: dict[str, int] = {}
         for event in summary.events:
             counts[event.event_type.value] = counts.get(event.event_type.value, 0) + 1
+        candidate_count = sum(1 for e in summary.events if not e.is_technical)
+        technical_count = sum(1 for e in summary.events if e.is_technical)
 
         _, unavailable = self._detector_availability(engine)
         warnings: list[str] = []
@@ -626,6 +708,12 @@ class ProctoringService:
             )
         if summary.telemetry.total_frames == 0:
             warnings.append("No frames were received; this session observed nothing.")
+        if technical_count:
+            warnings.append(
+                f"{technical_count} technical diagnostic(s) were recorded (camera or detector "
+                "faults). These are equipment problems, not candidate behaviour, and they may "
+                "have reduced what the session was able to observe."
+            )
 
         manifest_sha = None
         try:
@@ -650,6 +738,8 @@ class ProctoringService:
             frames_rejected=summary.skipped_frames,
             total_observations=summary.total_events,
             qualified_observations=summary.qualified_events,
+            candidate_observations=candidate_count,
+            technical_diagnostics=technical_count,
             observations_by_type=counts,
             package_dir=str(summary.package_dir),
             package_archive=str(summary.zip_path) if summary.zip_path else None,
@@ -667,6 +757,7 @@ class ProctoringService:
             event_type=event.event_type.value,
             severity=event.severity.value,
             status=event.status.value,
+            category=event.category.value,
             start_timestamp=event.timestamp,
             end_timestamp=event.end_timestamp,
             formatted_start=event.formatted_start,

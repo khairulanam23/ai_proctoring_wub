@@ -31,6 +31,7 @@ class SessionState(str, Enum):
     CREATED = "CREATED"  # Registered, no frames yet
     ENROLLING = "ENROLLING"  # Capturing the candidate's reference face
     ACTIVE = "ACTIVE"  # Attempt in progress, frames arriving
+    PAUSED = "PAUSED"  # Temporarily suspended; frames are rejected, not inferred
     FINALIZING = "FINALIZING"  # Attempt submitted, package being sealed
     COMPLETED = "COMPLETED"  # Package sealed and verified
     FAILED = "FAILED"  # Aborted; any partial package is marked as such
@@ -145,6 +146,10 @@ class FrameAck:
     active_observations: list[str] = field(default_factory=list)
     """Event types currently open. Not a verdict — conditions being watched."""
 
+    engine_state: str | None = None
+    """The engine's processing state for this frame (RUNNING, PAUSED, ...). Lets a
+    client tell a rejected-because-paused frame from a rejected-because-corrupt one."""
+
     processing_latency_ms: float = 0.0
     next_frame_due_in_seconds: float = 0.25
     """How long the client should wait before sending the next frame; follows the
@@ -166,6 +171,7 @@ class FrameAck:
             "detected_objects": self.detected_objects,
             "detected_wearables": self.detected_wearables,
             "active_observations": self.active_observations,
+            "engine_state": self.engine_state,
             "processing_latency_ms": round(self.processing_latency_ms, 2),
             "next_frame_due_in_seconds": round(self.next_frame_due_in_seconds, 3),
         }
@@ -187,6 +193,11 @@ class ObservationSummary:
     description: str
     qualified: bool
     confidence: float
+
+    category: str = "CANDIDATE_OBSERVATION"
+    """``CANDIDATE_OBSERVATION`` or ``TECHNICAL_DIAGNOSTIC``. A host must never
+    present a technical diagnostic as something the candidate did."""
+
     reliability_note: str | None = None
     """Set for observations a proctor must treat with extra caution — see
     :data:`RELIABILITY_NOTES`."""
@@ -199,6 +210,8 @@ class ObservationSummary:
             "event_type": self.event_type,
             "severity": self.severity,
             "status": self.status,
+            "category": self.category,
+            "is_technical": self.category == "TECHNICAL_DIAGNOSTIC",
             "start_timestamp": round(self.start_timestamp, 3),
             "end_timestamp": round(self.end_timestamp, 3),
             "formatted_start": self.formatted_start,
@@ -222,12 +235,19 @@ RELIABILITY_NOTES: dict[str, str] = {
         "snapshot, never as a finding on its own."
     ),
     "CANDIDATE_SPEAKING": (
-        "Detected from mouth movement only; there is no audio. Reading aloud, muttering "
-        "while thinking, chewing and yawning can all register."
+        "Possible talking, detected from mouth movement only; there is no audio and "
+        "nothing here shows that the candidate spoke. Reading aloud, muttering while "
+        "thinking, chewing and permitted accommodations can all register."
     ),
     "LOOKING_AWAY": (
         "Head orientation relative to the camera. A camera mounted off-centre, or a "
         "second monitor, produces sustained readings with no misconduct involved."
+    ),
+    "SUSPICIOUS_HEAD_POSE": (
+        "A pattern of repeated or rapid head movement, not a single turn. Fidgeting, "
+        "a noisy room, and a candidate working between a screen and a keyboard all "
+        "produce it. Watch the stretch of session it points at before drawing any "
+        "conclusion from it."
     ),
     "GAZE_OFF_SCREEN": (
         "Estimated from iris position without per-candidate calibration. Indicative only."
@@ -260,6 +280,10 @@ class SessionResult:
 
     total_observations: int = 0
     qualified_observations: int = 0
+    candidate_observations: int = 0
+    technical_diagnostics: int = 0
+    """Equipment faults recorded during the session. Never misconduct — reported
+    separately so a host cannot total them together with candidate observations."""
     observations_by_type: dict[str, int] = field(default_factory=dict)
 
     package_dir: str = ""
@@ -288,6 +312,8 @@ class SessionResult:
             "frames_rejected": self.frames_rejected,
             "total_observations": self.total_observations,
             "qualified_observations": self.qualified_observations,
+            "candidate_observations": self.candidate_observations,
+            "technical_diagnostics": self.technical_diagnostics,
             "observations_by_type": self.observations_by_type,
             "package_dir": self.package_dir,
             "package_archive": self.package_archive,

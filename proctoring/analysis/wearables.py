@@ -22,6 +22,20 @@ than presenting one confidence number for all of them:
 To cut the largest source of earbud false positives, any earpiece-class detection
 is geometrically cross-checked against the ear regions derived from the face
 landmarks. A candidate box that is nowhere near an ear is discarded outright.
+
+### Why small earpieces need a second pass
+
+At a typical webcam framing an in-ear bud occupies on the order of fifteen pixels
+on a 640x480 frame. Open-vocabulary detectors do not resolve objects that small,
+so a full-frame sweep alone reports headphones well and earbuds essentially never
+— which is exactly what real-world testing showed.
+
+The detector therefore runs a **second pass over upscaled crops of each ear
+region**, where the same bud occupies a couple of hundred pixels and is within the
+model's working range. Boxes found in a crop are mapped back into frame
+coordinates, and are ear-anchored by construction. This costs one extra small
+inference per ear on the frames the cadence scheduler already selected, and it is
+the single largest recall improvement available without changing models.
 """
 
 import logging
@@ -38,12 +52,21 @@ LOGGER = logging.getLogger(__name__)
 # Text prompts given to the open-vocabulary detector, and the event each maps to.
 # Several phrasings per target: open-vocabulary recall is sensitive to wording.
 WEARABLE_PROMPTS: dict[str, tuple[EventType, str]] = {
+    # Over-ear and on-ear: large, high contrast, reliably detected on the full frame.
     "headphones": (EventType.HEADPHONES_DETECTED, "headphones"),
     "over-ear headphones": (EventType.HEADPHONES_DETECTED, "headphones"),
     "headset with microphone": (EventType.HEADPHONES_DETECTED, "headphones"),
+    "gaming headset": (EventType.HEADPHONES_DETECTED, "headphones"),
+    # In-ear and wired: several phrasings, because open-vocabulary recall depends
+    # heavily on wording and no single phrase covers the whole category. Wired
+    # earphones and their cable were previously not asked for at all.
     "earphones": (EventType.EARBUDS_SUSPECTED, "earbuds"),
     "wireless earbud in ear": (EventType.EARBUDS_SUSPECTED, "earbuds"),
     "bluetooth earpiece": (EventType.EARBUDS_SUSPECTED, "earbuds"),
+    "wired earphone in ear": (EventType.EARBUDS_SUSPECTED, "earbuds"),
+    "earphone cable next to face": (EventType.EARBUDS_SUSPECTED, "earbuds"),
+    "small white earbud": (EventType.EARBUDS_SUSPECTED, "earbuds"),
+    "earbud": (EventType.EARBUDS_SUSPECTED, "earbuds"),
     "smart watch": (EventType.SMARTWATCH_DETECTED, "smartwatch"),
 }
 
@@ -63,6 +86,15 @@ class WearableDetection:
     ear_anchored: bool = False  # confirmed to overlap an ear region
     reliability: str = "medium"  # "high" | "medium" | "low"
 
+    source: str = "frame"
+    """``frame`` for the full-frame sweep, ``ear_zoom`` for the upscaled ear crop.
+    Recorded because the two passes have genuinely different characteristics and a
+    proctor reviewing a marginal earbud call should be able to tell them apart."""
+
+    hand_corroborated: bool = False
+    """A hand was at the ear region in the same frame. Independent of the visual
+    detection, and the gesture that accompanies fitting or adjusting an earpiece."""
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "target": self.target,
@@ -72,6 +104,8 @@ class WearableDetection:
             "bbox": list(self.bbox),
             "ear_anchored": self.ear_anchored,
             "reliability": self.reliability,
+            "source": self.source,
+            "hand_corroborated": self.hand_corroborated,
         }
 
 
@@ -86,6 +120,10 @@ class WearableAnalysisResult:
     rejected_count: int = 0
     """Candidates discarded for sitting nowhere near an ear."""
 
+    ear_regions_scanned: int = 0
+    """Ear crops the zoom pass examined this sweep. Zero means the pass did not run —
+    either it is disabled, or no face landmarks were available to locate the ears."""
+
     inference_ms: float = 0.0
 
     @property
@@ -97,6 +135,7 @@ class WearableAnalysisResult:
             "ran": self.ran,
             "detections": [d.to_dict() for d in self.detections],
             "rejected_count": self.rejected_count,
+            "ear_regions_scanned": self.ear_regions_scanned,
             "inference_ms": round(self.inference_ms, 2),
         }
 
@@ -117,6 +156,8 @@ class WearableDetector:
         earbud_confidence_threshold: float = 0.28,
         prompts: Sequence[str] | None = None,
         device: str | None = None,
+        enable_ear_region_zoom: bool = True,
+        ear_roi_target_px: int = 320,
         auto_load: bool = True,
     ) -> None:
         """
@@ -125,10 +166,16 @@ class WearableDetector:
             earbud_confidence_threshold: Deliberately higher floor for earpieces.
                 Small, ambiguous targets produce the most false positives, and a
                 false accusation of wearing an earpiece is expensive for a candidate.
+            enable_ear_region_zoom: Run a second pass over upscaled ear crops. An
+                in-ear bud is below the model's resolving power at native frame
+                scale, so without this pass earbuds are effectively undetectable.
+            ear_roi_target_px: Longest side each ear crop is upscaled to.
         """
         self.model_name = model_name
         self.confidence_threshold = float(confidence_threshold)
         self.earbud_confidence_threshold = float(earbud_confidence_threshold)
+        self.enable_ear_region_zoom = bool(enable_ear_region_zoom)
+        self.ear_roi_target_px = max(64, int(ear_roi_target_px))
         self.prompts = list(prompts) if prompts else list(WEARABLE_PROMPTS.keys())
         self.device = device
         self.model = None
@@ -158,12 +205,24 @@ class WearableDetector:
         frame: np.ndarray,
         ear_regions: list[tuple[int, int, int, int]] | None = None,
         face_bbox: tuple[int, int, int, int] | None = None,
+        hand_at_ear: bool = False,
     ) -> WearableAnalysisResult:
         """Run open-vocabulary detection and filter the results geometrically.
 
-        ``ear_regions`` come from the facial landmarks.  When supplied, ear-anchored
-        targets must overlap one of them; this removes the bulk of spurious earbud
-        boxes fired by earrings, hair clips and background clutter.
+        Two passes are made. The first covers the whole frame and finds anything
+        large enough to resolve there — headphones, headsets, a watch on a wrist.
+        The second, when ``ear_regions`` are available, re-examines upscaled crops of
+        each ear, where a small earpiece finally occupies enough pixels to be found.
+
+        ``ear_regions`` come from the facial landmarks. When supplied, ear-anchored
+        targets from the full-frame pass must overlap one of them; this removes the
+        bulk of spurious earbud boxes fired by earrings, hair clips and background
+        clutter. Detections from the zoom pass are ear-anchored by construction.
+
+        ``hand_at_ear`` is the hand analyzer's independent view of the same moment.
+        It never creates a detection on its own — it only strengthens one that the
+        image already supports, and is recorded on the detection so a proctor can
+        see which signals agreed.
         """
         import time
 
@@ -171,40 +230,52 @@ class WearableDetector:
         if not self.is_available or frame is None or frame.size == 0:
             return result
 
+        regions = list(ear_regions or [])
         t0 = time.perf_counter()
-        try:
-            prediction = self.model.predict(
-                frame,
-                conf=min(self.confidence_threshold, self.earbud_confidence_threshold),
-                verbose=False,
-            )[0]
-        except Exception as exc:
-            LOGGER.warning("Wearable detection failed: %s", exc)
-            return result
+
+        detections = self._scan_frame(frame, regions, face_bbox, result)
+
+        if self.enable_ear_region_zoom and regions:
+            for region in regions:
+                found = self._scan_ear_region(frame, region)
+                result.ear_regions_scanned += 1
+                detections.extend(found)
+
         result.inference_ms = (time.perf_counter() - t0) * 1000.0
         result.ran = True
 
-        names = self.model.model.names
-        for box in prediction.boxes:
-            prompt = names[int(box.cls)]
+        for detection in detections:
+            detection.hand_corroborated = bool(hand_at_ear) and detection.target in _EAR_ANCHORED
+            detection.reliability = self._rate_reliability(
+                detection.target,
+                detection.confidence,
+                detection.ear_anchored,
+                hand_corroborated=detection.hand_corroborated,
+            )
+
+        result.detections = detections
+        return self._deduplicate(result)
+
+    def _scan_frame(
+        self,
+        frame: np.ndarray,
+        ear_regions: list[tuple[int, int, int, int]],
+        face_bbox: tuple[int, int, int, int] | None,
+        result: WearableAnalysisResult,
+    ) -> list[WearableDetection]:
+        """Full-frame pass, with ear-anchored targets cross-checked geometrically."""
+        boxes = self._predict(frame)
+        detections: list[WearableDetection] = []
+
+        for prompt, confidence, bbox in boxes:
             mapping = WEARABLE_PROMPTS.get(prompt)
             if mapping is None:
                 continue
             event_type, target = mapping
-
-            confidence = float(box.conf)
-            floor = (
-                self.earbud_confidence_threshold
-                if target == "earbuds"
-                else self.confidence_threshold
-            )
-            if confidence < floor:
+            if confidence < self._floor_for(target):
                 continue
 
-            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-            bbox = (x1, y1, x2, y2)
-
-            anchored = self._overlaps_any(bbox, ear_regions or [])
+            anchored = self._overlaps_any(bbox, ear_regions)
             if target in _EAR_ANCHORED:
                 if ear_regions and not anchored:
                     # Fires nowhere near an ear — not a believable earpiece.
@@ -221,7 +292,7 @@ class WearableDetector:
                     result.rejected_count += 1
                     continue
 
-            result.detections.append(
+            detections.append(
                 WearableDetection(
                     target=target,
                     prompt=prompt,
@@ -229,22 +300,138 @@ class WearableDetector:
                     confidence=confidence,
                     bbox=bbox,
                     ear_anchored=anchored,
-                    reliability=self._rate_reliability(target, confidence, anchored),
+                    source="frame",
                 )
             )
+        return detections
 
-        return self._deduplicate(result)
+    def _scan_ear_region(
+        self,
+        frame: np.ndarray,
+        region: tuple[int, int, int, int],
+    ) -> list[WearableDetection]:
+        """Second pass over one ear, upscaled so a small earpiece is resolvable.
+
+        Boxes are mapped back into frame coordinates before being returned, so every
+        detection this analyzer emits is in the same coordinate space regardless of
+        which pass produced it — the evidence annotator and the crop stage must not
+        have to know which pass ran.
+        """
+        crop, origin, scale = self._ear_crop(frame, region)
+        if crop is None:
+            return []
+
+        detections: list[WearableDetection] = []
+        for prompt, confidence, bbox in self._predict(crop):
+            mapping = WEARABLE_PROMPTS.get(prompt)
+            if mapping is None:
+                continue
+            event_type, target = mapping
+            if target not in _EAR_ANCHORED:
+                # A watch found inside an ear crop is a misfire, not a wrist.
+                continue
+            if confidence < self._floor_for(target):
+                continue
+
+            x1, y1, x2, y2 = bbox
+            detections.append(
+                WearableDetection(
+                    target=target,
+                    prompt=prompt,
+                    event_type=event_type,
+                    confidence=confidence,
+                    bbox=(
+                        origin[0] + int(x1 / scale),
+                        origin[1] + int(y1 / scale),
+                        origin[0] + int(x2 / scale),
+                        origin[1] + int(y2 / scale),
+                    ),
+                    ear_anchored=True,
+                    source="ear_zoom",
+                )
+            )
+        return detections
+
+    def _ear_crop(
+        self,
+        frame: np.ndarray,
+        region: tuple[int, int, int, int],
+    ) -> tuple[np.ndarray | None, tuple[int, int], float]:
+        """Clip an ear region to the frame and upscale it, returning the mapping back."""
+        height, width = frame.shape[:2]
+        x1 = max(0, min(int(region[0]), width - 1))
+        y1 = max(0, min(int(region[1]), height - 1))
+        x2 = max(x1 + 1, min(int(region[2]), width))
+        y2 = max(y1 + 1, min(int(region[3]), height))
+
+        patch = frame[y1:y2, x1:x2]
+        if patch.size == 0 or patch.shape[0] < 4 or patch.shape[1] < 4:
+            return None, (x1, y1), 1.0
+
+        longest = max(patch.shape[0], patch.shape[1])
+        scale = self.ear_roi_target_px / float(longest)
+        if scale <= 1.0:
+            # Already large enough; upscaling further adds cost and no information.
+            return patch, (x1, y1), 1.0
+
+        try:
+            import cv2
+
+            resized = cv2.resize(
+                patch,
+                (max(1, int(patch.shape[1] * scale)), max(1, int(patch.shape[0] * scale))),
+                interpolation=cv2.INTER_CUBIC,
+            )
+        except Exception as exc:
+            LOGGER.debug("Ear region upscale failed: %s", exc)
+            return patch, (x1, y1), 1.0
+
+        return resized, (x1, y1), scale
+
+    def _predict(self, image: np.ndarray) -> list[tuple[str, float, tuple[int, int, int, int]]]:
+        """Run the model over one image, returning (prompt, confidence, xyxy) triples."""
+        try:
+            prediction = self.model.predict(
+                image,
+                conf=min(self.confidence_threshold, self.earbud_confidence_threshold),
+                verbose=False,
+            )[0]
+        except Exception as exc:
+            LOGGER.warning("Wearable detection failed: %s", exc)
+            return []
+
+        names = self.model.model.names
+        boxes: list[tuple[str, float, tuple[int, int, int, int]]] = []
+        for box in prediction.boxes:
+            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+            boxes.append((names[int(box.cls)], float(box.conf), (x1, y1, x2, y2)))
+        return boxes
+
+    def _floor_for(self, target: str) -> float:
+        """Confidence floor for one target class."""
+        return (
+            self.earbud_confidence_threshold if target == "earbuds" else self.confidence_threshold
+        )
 
     @staticmethod
-    def _rate_reliability(target: str, confidence: float, ear_anchored: bool) -> str:
+    def _rate_reliability(
+        target: str,
+        confidence: float,
+        ear_anchored: bool,
+        hand_corroborated: bool = False,
+    ) -> str:
         """Rate how much weight a proctor should give this detection.
 
         Earbuds never rate "high" regardless of the model's confidence — the target
         is too small and too easily confused at webcam resolution for a confidence
-        score alone to be trustworthy.
+        score alone to be trustworthy. A hand at the ear in the same frame is an
+        independent signal and lifts a marginal call one step, but it cannot lift an
+        earbud past "medium" either: two weak signals agreeing is still not proof.
         """
         if target == "earbuds":
-            return "medium" if (ear_anchored and confidence >= 0.45) else "low"
+            if ear_anchored and (confidence >= 0.45 or hand_corroborated):
+                return "medium"
+            return "low"
         if target == "headphones":
             if confidence >= 0.45:
                 return "high"
@@ -276,10 +463,17 @@ class WearableDetector:
         headphones", "headset with microphone"), so one physical device commonly
         fires more than one box. Reporting it once keeps the event record honest.
         """
+
+        def rank(detection: WearableDetection) -> tuple[int, float]:
+            # An ear-anchored detection outranks a more confident unanchored one:
+            # confidence from a box that is nowhere near an ear is confidence in the
+            # wrong thing.
+            return (1 if detection.ear_anchored else 0, detection.confidence)
+
         best: dict[str, WearableDetection] = {}
         for detection in result.detections:
             existing = best.get(detection.target)
-            if existing is None or detection.confidence > existing.confidence:
+            if existing is None or rank(detection) > rank(existing):
                 best[detection.target] = detection
         result.detections = sorted(best.values(), key=lambda d: -d.confidence)
         return result

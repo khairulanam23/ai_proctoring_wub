@@ -14,6 +14,8 @@ class EventType(str, Enum):
     MULTIPLE_FACES = "MULTIPLE_FACES"
     UNKNOWN_FACE = "UNKNOWN_FACE"
     FACE_MISMATCH = "FACE_MISMATCH"
+    FACE_OCCLUDED = "FACE_OCCLUDED"
+    CAMERA_OBSTRUCTED = "CAMERA_OBSTRUCTED"
     POSSIBLE_PRESENTATION_ATTACK = "POSSIBLE_PRESENTATION_ATTACK"  # face never blinks
     PERSON_ENTERED_FRAME = "PERSON_ENTERED_FRAME"
     PERSON_LEFT_FRAME = "PERSON_LEFT_FRAME"
@@ -46,10 +48,68 @@ class EventType(str, Enum):
     EARBUDS_SUSPECTED = "EARBUDS_SUSPECTED"  # Low-confidence by nature - see the accuracy guide
     SMARTWATCH_DETECTED = "SMARTWATCH_DETECTED"
 
-    # System and failure diagnostics
+    # System and camera failure diagnostics (NOT candidate misconduct)
     SYSTEM_ERROR = "SYSTEM_ERROR"
     DETECTOR_ERROR = "DETECTOR_ERROR"
+    CAMERA_FRAME_FROZEN = "CAMERA_FRAME_FROZEN"
+    CAMERA_DISCONNECTED = "CAMERA_DISCONNECTED"
+
+    # Session control. Recorded so a gap in the timeline is explained rather than
+    # left for a reviewer to guess at: "paused by the proctor" and "camera died"
+    # must not look the same in an evidence package.
+    SESSION_PAUSED = "SESSION_PAUSED"
+    SESSION_RESUMED = "SESSION_RESUMED"
     OTHER_SUSPICIOUS_ACTIVITY = "OTHER_SUSPICIOUS_ACTIVITY"
+
+
+class EventCategory(str, Enum):
+    """Whether an event describes the candidate or describes the equipment.
+
+    This distinction is a core invariant of the system, and it is expressed here
+    structurally rather than only in prose. A camera that froze, a detector that
+    threw, or a dropped connection are facts about the *equipment*: they must never
+    be presented alongside candidate behaviour in a way that lets a reviewer — or a
+    counter, or a report — treat them as the same kind of thing.
+
+    Absence of evidence caused by a technical fault is not evidence of absence, and
+    keeping the two categories apart is what allows a package to say so honestly.
+    """
+
+    CANDIDATE_OBSERVATION = "CANDIDATE_OBSERVATION"
+    """Something observed about the candidate or their environment."""
+
+    TECHNICAL_DIAGNOSTIC = "TECHNICAL_DIAGNOSTIC"
+    """A fault in the capture or inference stack. Never misconduct."""
+
+
+# Events that describe the equipment rather than the candidate. Anything not
+# listed here is treated as a candidate observation, so a newly-added event type
+# defaults to the category that receives the most scrutiny rather than the least.
+_TECHNICAL_EVENT_TYPES: frozenset = frozenset(
+    {
+        EventType.SYSTEM_ERROR,
+        EventType.DETECTOR_ERROR,
+        EventType.CAMERA_FRAME_FROZEN,
+        EventType.CAMERA_DISCONNECTED,
+        EventType.CAMERA_OBSTRUCTED,
+        EventType.SESSION_PAUSED,
+        EventType.SESSION_RESUMED,
+    }
+)
+
+
+def category_for(event_type: EventType) -> EventCategory:
+    """Classify an event type as a candidate observation or a technical diagnostic."""
+    return (
+        EventCategory.TECHNICAL_DIAGNOSTIC
+        if event_type in _TECHNICAL_EVENT_TYPES
+        else EventCategory.CANDIDATE_OBSERVATION
+    )
+
+
+def is_technical(event_type: EventType) -> bool:
+    """True when the event describes equipment failure rather than the candidate."""
+    return event_type in _TECHNICAL_EVENT_TYPES
 
 
 class EventSeverity(str, Enum):
@@ -67,11 +127,14 @@ class EventSeverity(str, Enum):
 class EventStatus(str, Enum):
     """Lifecycle status of an observation event."""
 
-    RECORDED = "RECORDED"  # Raw observation recorded
+    OPEN = "OPEN"  # Incident opened on initial observation
+    ACTIVE = "ACTIVE"  # Incident ongoing across multiple frames
+    RECORDED = "RECORDED"  # Raw observation recorded but not duration-qualified
     QUALIFIED = "QUALIFIED"  # Passed duration qualification threshold
     EVIDENCE_CAPTURED = "EVIDENCE_CAPTURED"  # Visual evidence captured on disk
     EVIDENCE_FAILED = "EVIDENCE_FAILED"  # Evidence capture was attempted but failed
     VALIDATED = "VALIDATED"  # Evidence verified on disk with valid checksums
+    CLOSED = "CLOSED"  # Incident finalized and closed
 
 
 def format_seconds_to_timestamp(seconds: float) -> str:
@@ -195,10 +258,21 @@ class EventRecord:
         if isinstance(self.status, str) and not isinstance(self.status, EventStatus):
             self.status = EventStatus(self.status)
 
+    @property
+    def category(self) -> EventCategory:
+        """Whether this event describes the candidate or the equipment."""
+        return category_for(self.event_type)
+
+    @property
+    def is_technical(self) -> bool:
+        """True for camera and detector faults, which are never misconduct."""
+        return self.category is EventCategory.TECHNICAL_DIAGNOSTIC
+
     def to_dict(self) -> dict[str, Any]:
         """Convert EventRecord to a structured JSON-serializable dictionary."""
         return {
             "event_id": self.event_id,
+            "category": self.category.value,
             "session_id": self.session_id,
             "timestamp": round(self.timestamp, 3),
             "end_timestamp": round(self.end_timestamp, 3),

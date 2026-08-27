@@ -1,18 +1,17 @@
-"""Face recognition and verification module using OpenCV SFace with robust preprocessing and multi-image enrollment."""
+from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
 
 from proctoring.detection.face_detector import FaceDetection, FaceDetector
-from proctoring.preprocessing.face_preprocessing import (
-    FacePreprocessor,
-    PreprocessingResult,
-)
+
+if TYPE_CHECKING:
+    from proctoring.preprocessing.face_preprocessing import PreprocessingResult
 
 
 @dataclass
@@ -106,7 +105,7 @@ class FaceVerifier:
     def __init__(
         self,
         detector: FaceDetector | None = None,
-        preprocessor: FacePreprocessor | None = None,
+        preprocessor: Any | None = None,
         recognizer_model_path: str | Path = "models/face_recognition_sface_2021dec.onnx",
         default_metric: str = "cosine",
         default_threshold: float | None = None,
@@ -118,9 +117,12 @@ class FaceVerifier:
             raise FileNotFoundError(f"SFace model file not found at: {self.recognizer_model_path}")
 
         self.detector = detector if detector is not None else FaceDetector()
-        self.preprocessor = (
-            preprocessor if preprocessor is not None else FacePreprocessor(detector=self.detector)
-        )
+        if preprocessor is not None:
+            self.preprocessor = preprocessor
+        else:
+            from proctoring.preprocessing.face_preprocessing import FacePreprocessor
+
+            self.preprocessor = FacePreprocessor(detector=self.detector)
 
         self.default_metric = default_metric.lower()
         if self.default_metric not in ("cosine", "l2"):

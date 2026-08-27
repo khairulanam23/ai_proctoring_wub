@@ -4,12 +4,13 @@ Built on the MediaPipe Face Landmarker, which returns 478 dense landmarks, 52
 blendshape activations and a 4x4 facial transformation matrix per face.  That
 gives three signals the sparse 5-point YuNet detector cannot provide:
 
-* **Speaking** — from the temporal *variation* of mouth blendshapes, not their
-  instantaneous value.  A candidate resting with their mouth open, yawning, or
-  simply having a wide neutral mouth all produce a high ``jawOpen`` score while
-  saying nothing.  Only repeated articulation produces the oscillation that
-  distinguishes speech, so this analyzer buffers a short history and measures
-  movement across it.
+* **Speech-like mouth activity** — from the temporal *shape* of the articulation
+  signal across a window, not its instantaneous value.  A candidate resting with
+  their mouth open, yawning, or simply having a wide neutral mouth all produce a
+  high ``jawOpen`` score while saying nothing.  Only repeated opening and closing
+  produces a wide swing that crosses its own mid-level many times and keeps
+  returning to near-closed, so this analyzer buffers a window and measures all
+  three.  There is no audio: this never establishes that speech occurred.
 * **Head pose** — yaw, pitch and roll decomposed from the transformation matrix.
 * **Gaze** — iris centre offset within the eye aperture, from the refined iris
   landmarks (indices 468-477).
@@ -29,6 +30,8 @@ from typing import Any
 
 import numpy as np
 
+from proctoring.analysis.gaze import GazeDirection, GazeObservation, GazeTracker
+
 # Landmark index groups in the MediaPipe canonical face mesh.
 _UPPER_LIP_INNER = 13
 _LOWER_LIP_INNER = 14
@@ -40,20 +43,34 @@ _RIGHT_IRIS = (473, 474, 475, 476, 477)
 _LEFT_EYE_INNER, _LEFT_EYE_OUTER = 133, 33
 _RIGHT_EYE_INNER, _RIGHT_EYE_OUTER = 362, 263
 
-# Blendshapes that move when a person articulates. Chosen to respond to speech
-# while staying low for a static open mouth.
-_SPEECH_BLENDSHAPES = (
-    "jawOpen",
+# Blendshapes forming the articulation index.
+#
+# The previous implementation averaged six blendshapes flat, including ``mouthClose``
+# — which rises as the jaw closes and therefore *cancels* the very signal being
+# measured — and two one-sided lip shapes that barely move in ordinary speech. The
+# mean of that set swings a few hundredths during clear speech, far below any usable
+# threshold, which is why speaking was almost never reported.
+#
+# The index is now dominated by jaw aperture, the one blendshape that tracks
+# articulation directly, with lip shaping as a secondary term that keeps
+# low-jaw-movement speech (mumbling, close-lipped speech) visible.
+_JAW_BLENDSHAPE = "jawOpen"
+_LIP_SHAPE_BLENDSHAPES = (
     "mouthFunnel",
     "mouthPucker",
-    "mouthClose",
-    "mouthLowerDownLeft",
-    "mouthUpperUpLeft",
+    "mouthStretchLeft",
+    "mouthStretchRight",
 )
+_LIP_SHAPE_WEIGHT = 0.35
+"""Weight of the lip-shaping term relative to jaw aperture in the articulation index."""
 
-# Landmarks approximating the ear region, used to cross-check earpiece detections.
+# Landmarks tracing the visible perimeter of each ear, used to localise earpiece
+# detections. A single anchor point is kept as a fallback for sparse meshes.
 _LEFT_EAR_ANCHOR = 234
 _RIGHT_EAR_ANCHOR = 454
+_LEFT_EAR_PERIMETER = (234, 227, 137, 177, 132, 93, 58, 172)
+_RIGHT_EAR_PERIMETER = (454, 447, 366, 401, 361, 323, 288, 397)
+_DEFAULT_EAR_PADDING_RATIO = 0.55
 
 # Eyelid-closure blendshapes, used for the liveness signal.
 _BLINK_BLENDSHAPES = ("eyeBlinkLeft", "eyeBlinkRight")
@@ -93,10 +110,17 @@ class FacialDynamicsResult:
     mouth_open_ratio: float | None = None
     speech_activity: float | None = None  # 0-1 articulation-movement score
     is_speaking: bool | None = None
+    """``None`` means *not measured*: too little history yet, or a sampling rate too
+    low for the measurement to be possible. Never a stand-in for "not speaking"."""
+
+    speech_measurable: bool = True
+    """False when the configured sampling rate is below the articulation floor. The
+    frame carries no claim about speech at all in that case."""
 
     # Head pose & gaze
     head_pose: HeadPose | None = None
     is_looking_away: bool | None = None
+    gaze: GazeObservation | None = None
     gaze_offset: float | None = None  # 0 = centred, 1 = at the eye corner
     is_gaze_off_screen: bool | None = None
 
@@ -107,6 +131,13 @@ class FacialDynamicsResult:
     liveness_state: str = "UNKNOWN"  # "LIVE" | "NO_BLINK_DETECTED" | "UNKNOWN"
     calibrated: bool = False
     """Whether pose and gaze were judged against a per-candidate baseline."""
+
+    baseline_yaw: float = 0.0
+    baseline_pitch: float = 0.0
+    """The neutral pose this frame was measured against. Published on the result so
+    the reporting layer applies the same baseline the analyzer did — it previously
+    re-evaluated head pose against a hard-coded zero, discarding calibration and
+    with it the correction for an off-centre camera."""
 
     # Regions other analyzers reuse
     ear_regions: list[tuple[int, int, int, int]] = field(default_factory=list)
@@ -124,14 +155,18 @@ class FacialDynamicsResult:
             if self.speech_activity is not None
             else None,
             "is_speaking": self.is_speaking,
+            "speech_measurable": self.speech_measurable,
             "head_pose": self.head_pose.to_dict() if self.head_pose else None,
             "is_looking_away": self.is_looking_away,
+            "gaze": self.gaze.to_dict() if self.gaze else None,
             "gaze_offset": round(self.gaze_offset, 4) if self.gaze_offset is not None else None,
             "is_gaze_off_screen": self.is_gaze_off_screen,
             "eye_closure": round(self.eye_closure, 4) if self.eye_closure is not None else None,
             "blink_count": self.blink_count,
             "liveness_state": self.liveness_state,
             "calibrated": self.calibrated,
+            "baseline_yaw": round(self.baseline_yaw, 2),
+            "baseline_pitch": round(self.baseline_pitch, 2),
             "inference_ms": round(self.inference_ms, 2),
         }
 
@@ -149,32 +184,46 @@ class FacialDynamicsAnalyzer:
     def __init__(
         self,
         model_path: str = DEFAULT_MODEL,
-        speech_window_frames: int = 8,
-        speech_movement_threshold: float = 0.055,
-        speech_min_oscillations: int = 2,
+        speech_window_frames: int = 12,
+        speech_articulation_amplitude: float = 0.18,
+        speech_min_crossings: int = 3,
+        speech_closed_ratio: float = 0.45,
+        sampling_fps: float = 4.0,
+        speech_min_sampling_fps: float = 6.0,
         yaw_limit_degrees: float = 30.0,
         pitch_limit_degrees: float = 25.0,
         gaze_offset_limit: float = 0.32,
         blink_threshold: float = 0.45,
         liveness_grace_seconds: float = 45.0,
+        ear_region_padding_ratio: float = _DEFAULT_EAR_PADDING_RATIO,
         max_faces: int = 2,
     ) -> None:
         """
         Args:
-            speech_window_frames: History length for the articulation measure.  At
-                4 fps this is a two-second window — long enough to see syllable
-                rhythm, short enough that the flag tracks the candidate.
-            speech_movement_threshold: Minimum mean absolute frame-to-frame change
-                in mouth activation to count as articulation.
-            speech_min_oscillations: Direction reversals required in the window.
-                Guards against a single slow mouth opening (a yawn) registering as
-                speech: real articulation reverses repeatedly.
+            speech_window_frames: History length for the articulation measure. At the
+                default 4 fps sampling rate twelve frames is a three-second window.
+                The caller is expected to derive this from the configured sampling
+                rate and ``ExamPolicy.speech_window_seconds`` so the window keeps the
+                same duration whatever the frame rate.
+            speech_articulation_amplitude: Robust peak-to-trough swing (p90 - p10) of
+                the articulation index required across the window.
+            speech_min_crossings: Times the index must cross its own mid-level within
+                the window. Speech crosses repeatedly; a yawn crosses twice.
+            speech_closed_ratio: The index must fall below this fraction of the
+                window amplitude at least once, so a held-open mouth cannot qualify.
+            sampling_fps: The rate frames actually arrive at, used only to decide
+                whether articulation is measurable at all.
+            speech_min_sampling_fps: Floor below which the mouth signal is aliased
+                beyond recovery and no speech verdict is issued.
             yaw_limit_degrees / pitch_limit_degrees: Head rotation beyond which the
                 candidate is recorded as looking away.
             gaze_offset_limit: Normalised iris displacement beyond which gaze is
                 recorded as off-screen.
             blink_threshold: Eyelid-closure activation above which the eye counts as
                 shut. Blinks are counted on the falling edge.
+            ear_region_padding_ratio: How far each ear box is grown beyond the ear
+                landmarks. A slightly oversized region only weakens the geometric
+                filter; an undersized one discards the detection outright.
             liveness_grace_seconds: How long a face may be continuously observed with
                 zero blinks before liveness is reported as suspect. A person blinks
                 every few seconds; a printed photograph or a paused video never does.
@@ -182,14 +231,18 @@ class FacialDynamicsAnalyzer:
                 spoofing is serious.
         """
         self.model_path = Path(model_path)
-        self.speech_window_frames = int(speech_window_frames)
-        self.speech_movement_threshold = float(speech_movement_threshold)
-        self.speech_min_oscillations = int(speech_min_oscillations)
+        self.speech_window_frames = max(4, int(speech_window_frames))
+        self.speech_articulation_amplitude = float(speech_articulation_amplitude)
+        self.speech_min_crossings = int(speech_min_crossings)
+        self.speech_closed_ratio = float(speech_closed_ratio)
+        self.sampling_fps = float(sampling_fps)
+        self.speech_min_sampling_fps = float(speech_min_sampling_fps)
         self.yaw_limit_degrees = float(yaw_limit_degrees)
         self.pitch_limit_degrees = float(pitch_limit_degrees)
         self.gaze_offset_limit = float(gaze_offset_limit)
         self.blink_threshold = float(blink_threshold)
         self.liveness_grace_seconds = float(liveness_grace_seconds)
+        self.ear_region_padding_ratio = float(ear_region_padding_ratio)
         self.max_faces = int(max_faces)
 
         # Per-candidate baseline, set by calibrate(). Thresholds are measured
@@ -198,6 +251,8 @@ class FacialDynamicsAnalyzer:
         self.baseline_pitch: float = 0.0
         self.baseline_gaze: float = 0.0
         self.is_calibrated: bool = False
+
+        self.gaze_tracker = GazeTracker(horizontal_threshold=self.gaze_offset_limit)
 
         # Liveness bookkeeping, spanning the whole session.
         self._blink_count = 0
@@ -265,7 +320,7 @@ class FacialDynamicsAnalyzer:
         who moved around during calibration has not given a usable neutral pose, and
         silently averaging it would bake their movement into every later reading.
         """
-        yaws, pitches, gazes = [], [], []
+        yaws, pitches, gazes, gaze_pairs = [], [], [], []
         for frame in frames:
             result = self.analyze(frame)
             if not result.face_found or result.head_pose is None:
@@ -274,6 +329,8 @@ class FacialDynamicsAnalyzer:
             pitches.append(result.head_pose.pitch)
             if result.gaze_offset is not None:
                 gazes.append(result.gaze_offset)
+            if result.gaze is not None and result.gaze.direction != GazeDirection.UNKNOWN:
+                gaze_pairs.append((result.gaze.horizontal, result.gaze.vertical))
 
         if len(yaws) < 3:
             return {
@@ -296,6 +353,10 @@ class FacialDynamicsAnalyzer:
         self.baseline_yaw = float(np.median(yaws))
         self.baseline_pitch = float(np.median(pitches))
         self.baseline_gaze = float(np.median(gazes)) if gazes else 0.0
+
+        if gaze_pairs:
+            self.gaze_tracker.calibrate(gaze_pairs)
+
         self.is_calibrated = True
         self.reset()
 
@@ -305,6 +366,8 @@ class FacialDynamicsAnalyzer:
             "baseline_yaw": round(self.baseline_yaw, 2),
             "baseline_pitch": round(self.baseline_pitch, 2),
             "baseline_gaze": round(self.baseline_gaze, 3),
+            "baseline_gaze_h": round(self.gaze_tracker.calibration.baseline_horizontal, 4),
+            "baseline_gaze_v": round(self.gaze_tracker.calibration.baseline_vertical, 4),
             "yaw_stability_deg": round(yaw_spread, 2),
             "pitch_stability_deg": round(pitch_spread, 2),
         }
@@ -368,9 +431,13 @@ class FacialDynamicsAnalyzer:
 
         result.face_found = True
         result.calibrated = self.is_calibrated
+        result.baseline_yaw = self.baseline_yaw
+        result.baseline_pitch = self.baseline_pitch
         result.landmarks = landmarks
         result.face_bbox = self._bbox_from_landmarks(landmarks, width, height)
-        result.ear_regions = self._ear_regions(landmarks, width, height)
+        result.ear_regions = self._ear_regions(
+            landmarks, width, height, padding_ratio=self.ear_region_padding_ratio
+        )
         result.mouth_region = self._mouth_region(landmarks, width, height)
 
         blendshapes = (
@@ -405,15 +472,32 @@ class FacialDynamicsAnalyzer:
         landmarks: np.ndarray,
         blendshapes: dict[str, float],
     ) -> None:
-        """Score articulation from the movement of mouth activation over time.
+        """Score speech-like articulation across a window of recent frames.
 
-        The instantaneous mouth opening is reported for context, but the speaking
-        flag depends on *change*: mean absolute frame-to-frame movement above a
-        threshold, plus enough direction reversals to rule out a single slow
-        gesture such as a yawn.
+        **There is no audio.** Nothing here establishes that the candidate spoke; it
+        establishes that the mouth moved the way a mouth moves during speech. The
+        event this feeds is a prompt to watch the snapshot, not a finding.
+
+        Three conditions must hold together, because each on its own has a common
+        innocent cause:
+
+        ``amplitude``
+            Robust peak-to-trough swing (p90 - p10) of the articulation index over
+            the window. Rules out a still face and ordinary expression drift.
+        ``crossings``
+            How many times the index crosses its own mid-level. This is the measure
+            that separates speech from a yawn: a yawn crosses twice however deep it
+            is, while continuous articulation crosses repeatedly. Crossings are
+            counted rather than frame-to-frame sign changes because at 4 fps the
+            3-6 Hz syllable rate is aliased and per-frame deltas are close to noise —
+            the previous implementation counted exactly those deltas.
+        ``returns to closed``
+            The mouth must come back down near its window minimum. A yawn, a smile
+            and a resting open mouth all hold a level instead.
         """
         # Geometric mouth opening, normalised by mouth width so it is invariant to
-        # how close the candidate sits to the camera.
+        # how close the candidate sits to the camera. Reported for context, and used
+        # as the articulation index when blendshapes are unavailable.
         if landmarks.shape[0] > max(_LOWER_LIP_INNER, _MOUTH_RIGHT_CORNER):
             vertical = float(
                 np.linalg.norm(landmarks[_UPPER_LIP_INNER] - landmarks[_LOWER_LIP_INNER])
@@ -423,36 +507,77 @@ class FacialDynamicsAnalyzer:
             )
             result.mouth_open_ratio = vertical / horizontal if horizontal > 1e-6 else 0.0
 
-        if blendshapes:
-            activation = float(
-                np.mean([blendshapes.get(name, 0.0) for name in _SPEECH_BLENDSHAPES])
-            )
-        elif result.mouth_open_ratio is not None:
-            activation = result.mouth_open_ratio
-        else:
+        if self.sampling_fps < self.speech_min_sampling_fps:
+            # Below the articulation floor the signal is aliased past recovery. Say
+            # so, rather than returning a verdict the data cannot support.
+            result.speech_measurable = False
+            result.is_speaking = None
+            return
+
+        activation = self._articulation_index(blendshapes, result.mouth_open_ratio)
+        if activation is None:
             return
 
         self._mouth_history.append(activation)
-        if len(self._mouth_history) < max(3, self.speech_window_frames // 2):
-            # Too little history to judge; report movement so far but no verdict.
+        if len(self._mouth_history) < max(4, self.speech_window_frames // 2):
+            # Too little history to judge; withhold the verdict rather than guess.
             result.speech_activity = 0.0
             result.is_speaking = None
             return
 
-        series = np.array(self._mouth_history, dtype=np.float32)
-        deltas = np.diff(series)
-        movement = float(np.mean(np.abs(deltas)))
-
-        # Count sign changes: articulation opens and closes repeatedly.
-        signs = np.sign(deltas)
-        signs = signs[signs != 0]
-        oscillations = int(np.sum(signs[1:] != signs[:-1])) if signs.size > 1 else 0
-
-        result.speech_activity = min(1.0, movement / max(1e-6, self.speech_movement_threshold * 2))
-        result.is_speaking = (
-            movement >= self.speech_movement_threshold
-            and oscillations >= self.speech_min_oscillations
+        series = np.asarray(self._mouth_history, dtype=np.float32)
+        low, high = (float(v) for v in np.percentile(series, [10, 90]))
+        amplitude = high - low
+        result.speech_activity = float(
+            min(1.0, amplitude / max(1e-6, self.speech_articulation_amplitude))
         )
+
+        midpoint = (float(series.min()) + float(series.max())) / 2.0
+        crossings = self._count_crossings(series, midpoint)
+
+        # "Returned to closed" is measured against the window's own range, so it holds
+        # for a candidate whose neutral mouth rests slightly open.
+        closed_level = low + self.speech_closed_ratio * amplitude
+        returns_to_closed = bool(series.min() <= closed_level)
+
+        result.is_speaking = bool(
+            amplitude >= self.speech_articulation_amplitude
+            and crossings >= self.speech_min_crossings
+            and returns_to_closed
+        )
+
+    @staticmethod
+    def _articulation_index(
+        blendshapes: dict[str, float],
+        mouth_open_ratio: float | None,
+    ) -> float | None:
+        """Combine jaw aperture and lip shaping into one 0-1 articulation signal.
+
+        Jaw aperture carries most of the information. Lip shaping is added at a
+        reduced weight so close-lipped or mumbled speech, which moves the jaw very
+        little, still produces a measurable series. ``mouthClose`` is deliberately
+        excluded: it rises as the jaw closes and averaging it in cancels the signal.
+        """
+        if blendshapes:
+            jaw = float(blendshapes.get(_JAW_BLENDSHAPE, 0.0))
+            shaping = max(
+                (float(blendshapes.get(name, 0.0)) for name in _LIP_SHAPE_BLENDSHAPES),
+                default=0.0,
+            )
+            return float(min(1.0, jaw + _LIP_SHAPE_WEIGHT * shaping))
+        if mouth_open_ratio is not None:
+            return float(mouth_open_ratio)
+        return None
+
+    @staticmethod
+    def _count_crossings(series: np.ndarray, level: float) -> int:
+        """Count transitions of ``series`` from below ``level`` to above it, and back.
+
+        Samples sitting exactly on the level are attributed to the side the signal
+        was last on, so a flat series never accumulates crossings.
+        """
+        above = series > level
+        return int(np.count_nonzero(above[1:] != above[:-1]))
 
     # ------------------------------------------------------------------
     # Liveness
@@ -546,31 +671,22 @@ class FacialDynamicsAnalyzer:
         )
 
     def _measure_gaze(self, result: FacialDynamicsResult, landmarks: np.ndarray) -> None:
-        """Estimate horizontal gaze from iris position within the eye aperture.
+        """Estimate normalized gaze and directional classification from iris position.
 
-        Requires the refined iris landmarks; if the model did not emit them the
-        measurement is left unmeasured rather than approximated from eyelids.
+        Uses the refined iris landmarks (indices 468-477); if unavailable, gaze is
+        left unmeasured.
         """
         if landmarks.shape[0] <= max(_RIGHT_IRIS):
             return
 
-        offsets = []
-        for iris, inner, outer in (
-            (_LEFT_IRIS, _LEFT_EYE_INNER, _LEFT_EYE_OUTER),
-            (_RIGHT_IRIS, _RIGHT_EYE_INNER, _RIGHT_EYE_OUTER),
-        ):
-            iris_centre = landmarks[list(iris)].mean(axis=0)
-            eye_inner, eye_outer = landmarks[inner], landmarks[outer]
-            eye_centre = (eye_inner + eye_outer) / 2.0
-            half_width = float(np.linalg.norm(eye_outer - eye_inner)) / 2.0
-            if half_width > 1e-6:
-                offsets.append(float(iris_centre[0] - eye_centre[0]) / half_width)
-
-        if offsets:
-            result.gaze_offset = float(np.mean(np.abs(offsets)))
-            result.is_gaze_off_screen = (
-                abs(result.gaze_offset - self.baseline_gaze) > self.gaze_offset_limit
-            )
+        gaze_obs = self.gaze_tracker.measure(
+            landmarks=landmarks,
+            gaze_offset_limit=self.gaze_offset_limit,
+        )
+        if gaze_obs.direction != GazeDirection.UNKNOWN:
+            result.gaze = gaze_obs
+            result.gaze_offset = gaze_obs.offset
+            result.is_gaze_off_screen = gaze_obs.is_off_screen
 
     # ------------------------------------------------------------------
     # Regions
@@ -586,22 +702,51 @@ class FacialDynamicsAnalyzer:
 
     @staticmethod
     def _ear_regions(
-        landmarks: np.ndarray, width: int, height: int
+        landmarks: np.ndarray,
+        width: int,
+        height: int,
+        padding_ratio: float = _DEFAULT_EAR_PADDING_RATIO,
     ) -> list[tuple[int, int, int, int]]:
-        """Approximate boxes around each ear, used to sanity-check earpiece detections."""
+        """Approximate boxes around each ear, used to localise earpiece detections.
+
+        Previously each box was a small square centred on a single silhouette
+        landmark. That landmark sits on the *attachment* line of the ear, so a bud in
+        the ear canal, a hook over the top of the ear, and the earpiece of a headset
+        all fell outside the box — and the wearable detector discards anything that
+        does, which silently threw away genuine detections.
+
+        Both the whole visible ear perimeter and a generous pad are used now. A
+        region that is somewhat too large costs only a weaker geometric filter; one
+        that is too small costs the detection entirely.
+        """
         regions: list[tuple[int, int, int, int]] = []
         face_width = float(np.ptp(landmarks[:, 0]))
-        radius = max(12.0, face_width * 0.16)
-        for anchor in (_LEFT_EAR_ANCHOR, _RIGHT_EAR_ANCHOR):
-            if landmarks.shape[0] <= anchor:
+
+        for indices, anchor in (
+            (_LEFT_EAR_PERIMETER, _LEFT_EAR_ANCHOR),
+            (_RIGHT_EAR_PERIMETER, _RIGHT_EAR_ANCHOR),
+        ):
+            available = [i for i in indices if i < landmarks.shape[0]]
+            if len(available) >= 3:
+                points = landmarks[available]
+                x1, y1 = points.min(axis=0)
+                x2, y2 = points.max(axis=0)
+            elif landmarks.shape[0] > anchor:
+                # Sparse mesh: fall back to a square around the single anchor point.
+                cx, cy = landmarks[anchor]
+                radius = max(12.0, face_width * 0.16)
+                x1, y1, x2, y2 = cx - radius, cy - radius, cx + radius, cy + radius
+            else:
                 continue
-            cx, cy = landmarks[anchor]
+
+            pad_x = max(8.0, (x2 - x1) * padding_ratio)
+            pad_y = max(8.0, (y2 - y1) * padding_ratio)
             regions.append(
                 (
-                    max(0, int(cx - radius)),
-                    max(0, int(cy - radius)),
-                    min(width, int(cx + radius)),
-                    min(height, int(cy + radius)),
+                    max(0, int(x1 - pad_x)),
+                    max(0, int(y1 - pad_y)),
+                    min(width, int(x2 + pad_x)),
+                    min(height, int(y2 + pad_y)),
                 )
             )
         return regions

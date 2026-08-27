@@ -54,6 +54,8 @@ class TimelineEntry:
     head_pitch: float | None = None
     is_looking_away: bool | None = None
     gaze_offset: float | None = None
+    gaze_direction: str | None = None
+    occlusion_state: str | None = None
     detected_wearables: list[str] = field(default_factory=list)
 
     # Stage 7 — temporal qualification state at this instant
@@ -96,6 +98,8 @@ class TimelineEntry:
             "head_pitch": round(self.head_pitch, 2) if self.head_pitch is not None else None,
             "is_looking_away": self.is_looking_away,
             "gaze_offset": round(self.gaze_offset, 4) if self.gaze_offset is not None else None,
+            "gaze_direction": self.gaze_direction,
+            "occlusion_state": self.occlusion_state,
             "detected_wearables": self.detected_wearables,
             "active_event_types": self.active_event_types,
             "is_anomalous_state": self.is_anomalous_state,

@@ -8,8 +8,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from proctoring.analysis.facial_dynamics import FacialDynamicsResult
+from proctoring.analysis.gaze import GazeObservation
 from proctoring.analysis.hands import HandAnalysisResult
+from proctoring.analysis.occlusion import FaceOcclusionResult
 from proctoring.analysis.wearables import WearableAnalysisResult
+from proctoring.preprocessing.camera_health import CameraHealthStatus
 from proctoring.telemetry.performance import FrameTimingRecord
 
 
@@ -26,6 +29,8 @@ class FaceStatus:
     NO_FACE = "NO_FACE"  # Face detection ran and found nobody
     ENROLLED = "ENROLLED"  # Single face, matched the enrolled candidate
     UNKNOWN_FACE = "UNKNOWN_FACE"  # Single face, did not match the enrolled template
+    IDENTITY_UNCERTAIN = "IDENTITY_UNCERTAIN"  # Single face, similarity marginal / low quality
+    IDENTITY_MISMATCH = "IDENTITY_MISMATCH"  # Single face, high quality but distinct from template
     UNVERIFIED = "UNVERIFIED"  # Single face, but no enrolment to compare against
     MULTIPLE_FACES = "MULTIPLE_FACES"  # More than one face in frame
 
@@ -50,6 +55,11 @@ class FrameObservation:
     was_enhanced: bool = False
     mean_luminance: float | None = None
     blur_variance: float | None = None
+    camera_health: CameraHealthStatus | None = None
+
+    detector_failures: list[str] = field(default_factory=list)
+    """Detectors that failed on this frame. Their observations are unavailable, which
+    is a fact about the equipment and never about the candidate."""
 
     # Stages 4-5
     face_count: int | None = None
@@ -69,6 +79,8 @@ class FrameObservation:
 
     # Stage 6b — behavioural analysis
     facial_dynamics: FacialDynamicsResult | None = None
+    gaze: GazeObservation | None = None
+    occlusion: FaceOcclusionResult | None = None
     hand_analysis: HandAnalysisResult | None = None
     wearables: WearableAnalysisResult | None = None
 
@@ -107,6 +119,8 @@ class FrameObservation:
             "accepted": self.accepted,
             "rejection_reason": self.rejection_reason,
             "was_enhanced": self.was_enhanced,
+            "camera_health": self.camera_health.to_dict() if self.camera_health else None,
+            "detector_failures": self.detector_failures,
             "face_count": self.face_count,
             "face_status": self.face_status,
             "identity_verified": self.identity_verified,
@@ -115,6 +129,8 @@ class FrameObservation:
             "unknown_face_count": self.unknown_face_count,
             "prohibited_objects": self.prohibited_object_names,
             "facial_dynamics": self.facial_dynamics.to_dict() if self.facial_dynamics else None,
+            "gaze": self.gaze.to_dict() if self.gaze else None,
+            "occlusion": self.occlusion.to_dict() if self.occlusion else None,
             "hand_analysis": self.hand_analysis.to_dict() if self.hand_analysis else None,
             "wearables": self.wearables.to_dict() if self.wearables else None,
             "active_event_types": self.active_event_types,

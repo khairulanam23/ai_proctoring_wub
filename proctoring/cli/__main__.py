@@ -18,6 +18,7 @@ def _run_video(argv: list[str]) -> int:
     from proctoring.detection.face_verifier import FaceVerifier
     from proctoring.detection.object_detector import ObjectDetector
     from proctoring.engine import ProctoringEngine
+    from proctoring.storage import ProctoringStorage
 
     parser = argparse.ArgumentParser(prog="python -m proctoring.cli video")
     parser.add_argument("video", help="Path to the recorded examination video.")
@@ -42,7 +43,8 @@ def _run_video(argv: list[str]) -> int:
         help="Enable headphone / earbud / smart-watch detection (slow).",
     )
     parser.add_argument("--models-dir", default="models")
-    parser.add_argument("--output-dir", default="data/results/video_sessions")
+    parser.add_argument("--data-root", default="data")
+    parser.add_argument("--output-dir", default=None)
     parser.add_argument("--zip", action="store_true")
     args = parser.parse_args(argv)
 
@@ -72,12 +74,13 @@ def _run_video(argv: list[str]) -> int:
         except Exception as exc:
             print(f"Object detection disabled ({exc})")
 
+    storage = ProctoringStorage(args.data_root)
     config = SessionConfig(
-        session_id=args.session_id or f"video_{video_path.stem}",
+        session_id=args.session_id or storage.session_id(args.student),
         student_name=args.student,
         strictness=args.strictness,
         sampling_fps=args.fps,
-        output_dir=args.output_dir,
+        output_dir=args.output_dir or storage.sessions_root,
         enable_facial_dynamics=not args.no_behaviour,
         enable_hand_analysis=not args.no_behaviour,
         enable_wearable_detection=args.detect_wearables,
@@ -85,7 +88,8 @@ def _run_video(argv: list[str]) -> int:
         # No enrolment template is available for an arbitrary recording, so
         # identity verification is left off rather than reporting every face
         # as unknown.
-        enable_face_verification=False,
+        reference_templates=storage.load_templates(args.student),
+        enable_face_verification=bool(storage.load_templates(args.student)),
         create_zip=args.zip,
     )
     engine = ProctoringEngine(

@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from proctoring.config import SessionConfig
+from proctoring.core.events import EventType
 from proctoring.detection.face_detector import FaceDetector
 from proctoring.detection.face_verifier import FaceVerifier
 from tools.harness import ValidatedSessionHarness
@@ -319,17 +320,26 @@ class Phase10ProctoringTestSuite:
             for f_i in range(1, 20):  # Continuous 19 frames empty
                 eng.process_frame(img_empty, f_i, (f_i - 1) * 0.25)
             summary, stats = eng.finalize_session()
+            no_face_events = sum(
+                1
+                for e in summary.events
+                if e.event_type == EventType.NO_FACE
+                and e.status.value in ("VALIDATED", "QUALIFIED")
+            )
             records.append(
                 TestExecutionRecord(
                     test_id="TEST_09",
                     test_name="Persistent event",
                     test_type="REPLAY",
                     verdict=TestCaseVerdict.VERIFIED
-                    if stats.validated_events_count == 1
+                    if no_face_events == 1
                     else TestCaseVerdict.FAILED,
                     duration_ms=(time.perf_counter() - t0) * 1000.0,
                     evidence_notes="Continuous 19-frame departure consolidated into 1 single event without duplicate spam.",
-                    metrics={"validated_events": stats.validated_events_count},
+                    metrics={
+                        "validated_events": stats.validated_events_count,
+                        "no_face_events": no_face_events,
+                    },
                 )
             )
 

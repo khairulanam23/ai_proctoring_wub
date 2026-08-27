@@ -83,9 +83,36 @@ def test_live_flags_map_to_the_intended_settings():
     assert args.session_id == "exam_42" and args.student == "A. Candidate"
 
 
-def test_live_session_id_defaults_to_something_unique():
-    first = build_parser().parse_args([]).session_id
-    assert first.startswith("live_") and len(first) > 6
+def test_session_id_is_derived_from_student_and_start_time_by_default():
+    """``--session-id`` is now an override, not the source of the name.
+
+    The session directory is named ``<student>_<timestamp>`` by the storage layer so
+    evidence is filed under the student it belongs to, and two sessions can never
+    collide on a shared default.
+    """
+    args = build_parser().parse_args([])
+    assert args.session_id is None
+    assert args.output_dir is None, "output location comes from --data-root by default"
+
+    from proctoring.storage import ProctoringStorage
+
+    storage = ProctoringStorage("data")
+    name = storage.session_id("Anam")
+    assert name.startswith("Anam_")
+    assert len(name) > len("Anam_")
+
+
+def test_session_id_can_still_be_overridden():
+    args = build_parser().parse_args(["--session-id", "custom_name"])
+    assert args.session_id == "custom_name"
+
+
+def test_enrolment_flags_are_available():
+    """Enrolment is captured once; replacing it must be an explicit request."""
+    args = build_parser().parse_args([])
+    assert args.re_enroll is False
+    assert args.data_root == "data"
+    assert build_parser().parse_args(["--re-enroll"]).re_enroll is True
 
 
 # ---------------------------------------------------------------------------

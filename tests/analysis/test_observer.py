@@ -109,9 +109,14 @@ def test_liveness_failure_is_reported_from_strict_upward():
     assert "blinks rarely" in description, "the innocent explanation must travel with the finding"
 
 
-def test_wearable_detections_become_events_with_their_reliability():
-    observer = _observer(StrictnessLevel.STRICT)
-    wearables = WearableAnalysisResult(
+def _earbud_sweep():
+    """A fresh detection sweep reporting one suspected earbud.
+
+    A new result object per call is what makes it a distinct sweep — the engine
+    carries the *same* object forward between sweeps, and the observer counts votes
+    per sweep rather than per frame precisely so that carry-forward cannot vote.
+    """
+    return WearableAnalysisResult(
         ran=True,
         detections=[
             WearableDetection(
@@ -125,9 +130,36 @@ def test_wearable_detections_become_events_with_their_reliability():
             ),
         ],
     )
-    events = observer.map_to_events(_observation(facial_dynamics=_dynamics(), wearables=wearables))
+
+
+def test_one_weak_wearable_sweep_does_not_raise_an_event():
+    """A single marginal detection must never manufacture an incident on its own."""
+    observer = _observer(StrictnessLevel.STRICT)
+    events = observer.map_to_events(
+        _observation(facial_dynamics=_dynamics(), wearables=_earbud_sweep())
+    )
+    assert EventType.EARBUDS_SUSPECTED not in events
+
+
+def test_wearable_detections_become_events_once_sweeps_agree():
+    observer = _observer(StrictnessLevel.STRICT)
+    for _ in range(2):
+        events = observer.map_to_events(
+            _observation(facial_dynamics=_dynamics(), wearables=_earbud_sweep())
+        )
     assert EventType.EARBUDS_SUSPECTED in events
-    assert "reliability low" in events[EventType.EARBUDS_SUSPECTED]["description"]
+    description = events[EventType.EARBUDS_SUSPECTED]["description"]
+    assert "reliability low" in description
+    assert "sweeps agreed" in description
+
+
+def test_carried_forward_wearable_result_cannot_confirm_itself():
+    """The same result object re-presented across frames is one sweep, not many."""
+    observer = _observer(StrictnessLevel.STRICT)
+    sweep = _earbud_sweep()
+    for _ in range(5):
+        events = observer.map_to_events(_observation(facial_dynamics=_dynamics(), wearables=sweep))
+    assert EventType.EARBUDS_SUSPECTED not in events
 
 
 # ---------------------------------------------------------------------------

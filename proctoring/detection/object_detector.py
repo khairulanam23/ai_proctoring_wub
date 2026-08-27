@@ -129,7 +129,7 @@ class ObjectDetector:
         except ImportError as e:
             raise ImportError(
                 "Ultralytics is not installed. Please install 'ultralytics' or run "
-                "'pip install -r requirements-kaggle.txt' in your GPU environment."
+                "'pip install -e \".[detection]\"' in your environment."
             ) from e
 
         target = str(self.model_path) if self.model_path is not None else self.model_name

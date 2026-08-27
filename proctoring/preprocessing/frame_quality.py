@@ -6,6 +6,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from proctoring.preprocessing.camera_health import CameraHealthMonitor, CameraHealthStatus
+
 
 @dataclass
 class AdaptivePreprocessorConfig:
@@ -105,6 +107,7 @@ class FrameGateResult:
     is_low_light: bool = False
     is_high_light: bool = False
     is_blurred: bool = False
+    camera_health: CameraHealthStatus | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -120,6 +123,7 @@ class FrameGateResult:
             "is_low_light": self.is_low_light,
             "is_high_light": self.is_high_light,
             "is_blurred": self.is_blurred,
+            "camera_health": self.camera_health.to_dict() if self.camera_health else None,
         }
 
 
@@ -143,11 +147,17 @@ class FrameQualityGate:
         min_width: int = 160,
         min_height: int = 120,
         enable_enhancement: bool = True,
+        health_monitor: CameraHealthMonitor | None = None,
     ) -> None:
         self.preprocessor = preprocessor or AdaptiveImagePreprocessor()
         self.min_width = int(min_width)
         self.min_height = int(min_height)
         self.enable_enhancement = bool(enable_enhancement)
+        self.health_monitor = health_monitor or CameraHealthMonitor()
+
+    def reset(self) -> None:
+        """Reset internal stream state."""
+        self.health_monitor.reset()
 
     def validate(self, frame: Any) -> tuple[bool, str | None]:
         """Structural validation: is this buffer a usable BGR image of adequate size?"""
@@ -167,16 +177,24 @@ class FrameQualityGate:
             )
         return True, None
 
-    def process(self, frame: Any) -> FrameGateResult:
+    def process(self, frame: Any, timestamp_seconds: float = 0.0) -> FrameGateResult:
         """Validate the frame and, when illumination is extreme, return a CLAHE-enhanced copy.
 
         Enhancement is applied only under low-light or backlit conditions.  Running
         CLAHE unconditionally would cost roughly a millisecond per frame for no
         detection benefit on a well-lit desk, and can amplify sensor noise.
         """
+        # Run stateful stream continuity and camera health check
+        health = self.health_monitor.assess(frame, timestamp_seconds)
+
         is_valid, reason = self.validate(frame)
         if not is_valid:
-            return FrameGateResult(accepted=False, frame=None, rejection_reason=reason)
+            return FrameGateResult(
+                accepted=False,
+                frame=None,
+                rejection_reason=reason,
+                camera_health=health,
+            )
 
         quality = self.preprocessor.assess_quality(frame)
         if not quality.get("valid", False):
@@ -184,6 +202,7 @@ class FrameQualityGate:
                 accepted=False,
                 frame=None,
                 rejection_reason="Frame failed photometric quality assessment",
+                camera_health=health,
             )
 
         out_frame = frame
@@ -204,4 +223,5 @@ class FrameQualityGate:
             is_low_light=bool(quality.get("is_low_light", False)),
             is_high_light=bool(quality.get("is_high_light", False)),
             is_blurred=bool(quality.get("is_blurred", False)),
+            camera_health=health,
         )

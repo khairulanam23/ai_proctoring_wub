@@ -18,9 +18,11 @@ import numpy as np
 import psutil
 
 from proctoring.detection import (
-    ImageAugmenter,
     ObjectDetector,
     ObjectRelevanceFilter,
+)
+from tools.benchmark.robustness import (
+    ImageAugmenter,
     ThresholdEvaluator,
     generate_visual_comparison_grid,
 )

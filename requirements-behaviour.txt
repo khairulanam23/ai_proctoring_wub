@@ -1,6 +1,0 @@
-# Behavioural analysis — hands, speech articulation, head pose and gaze.
-# Adds roughly 30 ms per frame on CPU. Model bundles come from
-# `python scripts/download_models.py`.
-
--r requirements.txt
-mediapipe>=0.10.0

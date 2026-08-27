@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 
 from proctoring.config import SessionConfig
+from proctoring.core.events import is_technical
 from proctoring.detection.face_detector import FaceDetector
 from proctoring.detection.face_verifier import FaceVerifier
 from proctoring.detection.object_detector import ObjectDetector
@@ -215,7 +216,12 @@ class ValidatedSessionHarness:
             total_frames_processed=summary.processed_frames,
             raw_detections_count=self._raw_detection_count,
             candidate_events_created=self._candidate_seq,
-            validated_events_count=len(self.closed_candidates),
+            # Only candidate observations count here. A camera fault is not a
+            # validated observation about the candidate, and totalling the two
+            # together is exactly the conflation the event categories prevent.
+            validated_events_count=sum(
+                1 for c in self.closed_candidates if not is_technical(c.event_type)
+            ),
             discarded_candidates_count=len(self.discarded_candidates),
             evidence_capture_failures=self._failed_evidence_count,
             valid_evidence_count=self._valid_evidence_count,

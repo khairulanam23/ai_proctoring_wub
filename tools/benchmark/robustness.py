@@ -1,17 +1,19 @@
 """Robustness evaluation framework, visual condition generators, threshold benchmarking, and comparison visualizer."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any
+
 import cv2
 import numpy as np
 
-from proctoring.detection.object_detector import DetectedObject, ObjectDetectionResult, ObjectDetector
-from proctoring.detection.object_relevance import ObjectRelevanceFilter, ProctoringDetectionReport
+from proctoring.core.events import EventStatus
+from proctoring.detection.object_detector import ObjectDetectionResult, ObjectDetector
 
 
 class VisualCondition:
     """Standardized visual condition identifiers."""
+
     ORIGINAL = "original"
     LOW_LIGHT = "low_light"
     HIGH_LIGHT = "high_light"
@@ -52,35 +54,37 @@ class ImageAugmenter:
         if cond == VisualCondition.ORIGINAL:
             return image.copy()
 
-        elif cond == VisualCondition.LOW_LIGHT:
+        if cond == VisualCondition.LOW_LIGHT:
             # Shift brightness downward (dark room / dim lighting)
             shift = int(-55 * intensity)
             return np.clip(image.astype(np.int16) + shift, 0, 255).astype(np.uint8)
 
-        elif cond == VisualCondition.HIGH_LIGHT:
+        if cond == VisualCondition.HIGH_LIGHT:
             # Shift brightness upward (window glare / direct backlight)
             shift = int(50 * intensity)
             return np.clip(image.astype(np.int16) + shift, 0, 255).astype(np.uint8)
 
-        elif cond == VisualCondition.LOW_CONTRAST:
+        if cond == VisualCondition.LOW_CONTRAST:
             # Scale dynamic range toward mean gray
             factor = max(0.1, 1.0 - (0.5 * intensity))
             mean_val = 128.0
-            return np.clip((image.astype(np.float32) - mean_val) * factor + mean_val, 0, 255).astype(np.uint8)
+            return np.clip(
+                (image.astype(np.float32) - mean_val) * factor + mean_val, 0, 255
+            ).astype(np.uint8)
 
-        elif cond == VisualCondition.GAUSSIAN_BLUR:
+        if cond == VisualCondition.GAUSSIAN_BLUR:
             # Out-of-focus webcam blur
             ksize = int(11 * intensity) | 1  # ensure odd integer
             return cv2.GaussianBlur(image, (ksize, ksize), 0)
 
-        elif cond == VisualCondition.MOTION_BLUR:
+        if cond == VisualCondition.MOTION_BLUR:
             # Candidate motion / head movement blur
             ksize = max(3, int(15 * intensity))
             kernel = np.zeros((ksize, ksize), dtype=np.float32)
             kernel[int((ksize - 1) / 2), :] = np.ones(ksize, dtype=np.float32) / ksize
             return cv2.filter2D(image, -1, kernel)
 
-        elif cond == VisualCondition.PARTIAL_OCCLUSION:
+        if cond == VisualCondition.PARTIAL_OCCLUSION:
             # Occlusion block simulating hands / objects partially covering candidate or device
             occ = image.copy()
             occ_w = int(w * 0.25 * intensity)
@@ -93,20 +97,24 @@ class ImageAugmenter:
             occ[y1:y2, x1:x2] = (15, 15, 15)  # Dark occlusion patch
             return occ
 
-        elif cond == VisualCondition.LOW_RESOLUTION:
+        if cond == VisualCondition.LOW_RESOLUTION:
             # Heavy downsampling simulating poor network bandwidth / 240p webcam
             scale = max(0.1, 1.0 / (4.0 * intensity))
-            down = cv2.resize(image, (max(16, int(w * scale)), max(16, int(h * scale))), interpolation=cv2.INTER_AREA)
+            down = cv2.resize(
+                image,
+                (max(16, int(w * scale)), max(16, int(h * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
             return cv2.resize(down, (w, h), interpolation=cv2.INTER_NEAREST)
 
-        elif cond == VisualCondition.JPEG_COMPRESSION:
+        if cond == VisualCondition.JPEG_COMPRESSION:
             # Compression artifacts
             quality = max(5, int(100 - (75 * intensity)))
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
             _, enc = cv2.imencode(".jpg", image, encode_param)
             return cv2.imdecode(enc, cv2.IMREAD_COLOR)
 
-        elif cond == VisualCondition.PERSPECTIVE_TILT:
+        if cond == VisualCondition.PERSPECTIVE_TILT:
             # Slanted camera angle
             pts1 = np.float32([[0, 0], [w, 0], [0, h], [w, h]])
             offset = int(w * 0.12 * intensity)
@@ -114,11 +122,10 @@ class ImageAugmenter:
             matrix = cv2.getPerspectiveTransform(pts1, pts2)
             return cv2.warpPerspective(image, matrix, (w, h), borderMode=cv2.BORDER_REFLECT)
 
-        else:
-            raise ValueError(f"Unknown visual condition: '{condition}'")
+        raise ValueError(f"Unknown visual condition: '{condition}'")
 
     @classmethod
-    def generate_condition_suite(cls, image: np.ndarray) -> Dict[str, np.ndarray]:
+    def generate_condition_suite(cls, image: np.ndarray) -> dict[str, np.ndarray]:
         """Generate a dictionary of all standard visual condition variants for an input image."""
         conditions = [
             VisualCondition.ORIGINAL,
@@ -136,6 +143,7 @@ class ImageAugmenter:
 @dataclass
 class ConfusionMetrics:
     """Binary/multiclass detection confusion matrix and precision/recall metrics."""
+
     true_positives: int
     false_positives: int
     false_negatives: int
@@ -143,7 +151,7 @@ class ConfusionMetrics:
     recall: float
     f1: float
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "true_positives": self.true_positives,
             "false_positives": self.false_positives,
@@ -155,8 +163,8 @@ class ConfusionMetrics:
 
 
 def evaluate_detections(
-    predicted_classes: List[str],
-    expected_classes: List[str],
+    predicted_classes: list[str],
+    expected_classes: list[str],
 ) -> ConfusionMetrics:
     """Evaluate multiset class predictions against expected ground truth labels.
 
@@ -167,12 +175,12 @@ def evaluate_detections(
     Returns:
         ConfusionMetrics containing TP, FP, FN, precision, recall, and F1 score.
     """
-    pred_counts: Dict[str, int] = {}
+    pred_counts: dict[str, int] = {}
     for c in predicted_classes:
         name = c.lower().strip()
         pred_counts[name] = pred_counts.get(name, 0) + 1
 
-    exp_counts: Dict[str, int] = {}
+    exp_counts: dict[str, int] = {}
     for c in expected_classes:
         name = c.lower().strip()
         exp_counts[name] = exp_counts.get(name, 0) + 1
@@ -206,13 +214,14 @@ def evaluate_detections(
 @dataclass
 class ThresholdEvaluationResult:
     """Results of running detection at a specific confidence cutoff threshold."""
+
     threshold: float
     total_detections: int
-    class_counts: Dict[str, int]
+    class_counts: dict[str, int]
     average_confidence: float
-    metrics: Optional[ConfusionMetrics] = None
+    metrics: ConfusionMetrics | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "threshold": round(self.threshold, 2),
             "total_detections": self.total_detections,
@@ -225,15 +234,15 @@ class ThresholdEvaluationResult:
 class ThresholdEvaluator:
     """Sweep evaluator analyzing detection performance across multiple confidence thresholds."""
 
-    DEFAULT_THRESHOLDS: List[float] = [0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70]
+    DEFAULT_THRESHOLDS: list[float] = [0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70]
 
     @classmethod
     def evaluate_threshold_sweep(
         cls,
         detector: ObjectDetector,
-        images_with_ground_truth: List[Tuple[np.ndarray, Optional[List[str]]]],
-        thresholds: Optional[List[float]] = None,
-    ) -> List[ThresholdEvaluationResult]:
+        images_with_ground_truth: list[tuple[np.ndarray, list[str] | None]],
+        thresholds: list[float] | None = None,
+    ) -> list[ThresholdEvaluationResult]:
         """Run detection sweep over multiple confidence thresholds.
 
         Args:
@@ -245,13 +254,13 @@ class ThresholdEvaluator:
             List of ThresholdEvaluationResult items.
         """
         eval_thresholds = thresholds if thresholds is not None else cls.DEFAULT_THRESHOLDS
-        results: List[ThresholdEvaluationResult] = []
+        results: list[ThresholdEvaluationResult] = []
 
         for thresh in eval_thresholds:
-            all_preds: List[str] = []
-            all_exps: List[str] = []
-            all_confs: List[float] = []
-            class_counts: Dict[str, int] = {}
+            all_preds: list[str] = []
+            all_exps: list[str] = []
+            all_confs: list[float] = []
+            class_counts: dict[str, int] = {}
             has_gt = False
 
             for img, exp in images_with_ground_truth:
@@ -284,9 +293,9 @@ class ThresholdEvaluator:
 
 
 def generate_visual_comparison_grid(
-    condition_images: Dict[str, np.ndarray],
-    condition_results: Dict[str, ObjectDetectionResult],
-    output_path: Union[str, Path],
+    condition_images: dict[str, np.ndarray],
+    condition_results: dict[str, ObjectDetectionResult],
+    output_path: str | Path,
     cols: int = 3,
 ) -> Path:
     """Generate a high-resolution multi-panel visual comparison sheet.
@@ -303,7 +312,7 @@ def generate_visual_comparison_grid(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    rendered_panels: List[np.ndarray] = []
+    rendered_panels: list[np.ndarray] = []
     target_w, target_h = 360, 270
 
     palette = {
@@ -336,13 +345,24 @@ def generate_visual_comparison_grid(
                 (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
                 by1 = max(0, y1 - th - 4)
                 cv2.rectangle(panel, (x1, by1), (min(target_w, x1 + tw + 4), y1), c, -1)
-                cv2.putText(panel, label, (x1 + 2, y1 - 2), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), 1, cv2.LINE_AA)
+                cv2.putText(
+                    panel,
+                    label,
+                    (x1 + 2, y1 - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale,
+                    (0, 0, 0),
+                    1,
+                    cv2.LINE_AA,
+                )
 
         # Draw Condition Header Title Banner
         det_count = res.count if res else 0
         banner = np.zeros((28, target_w, 3), dtype=np.uint8)
         title = f"{cond_name.replace('_', ' ').upper()} ({det_count} det)"
-        cv2.putText(banner, title, (8, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(
+            banner, title, (8, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA
+        )
 
         full_panel = np.vstack([banner, panel])
         rendered_panels.append(full_panel)
@@ -362,3 +382,88 @@ def generate_visual_comparison_grid(
     grid = np.vstack(row_strips)
     cv2.imwrite(str(output_path), grid, [cv2.IMWRITE_JPEG_QUALITY, 95])
     return output_path
+
+
+@dataclass
+class PipelineRobustnessSummary:
+    """Summary of end-to-end pipeline robustness under perturbations."""
+
+    condition: str
+    total_frames: int
+    accepted_frames: int
+    skipped_frames: int
+    qualified_events_count: int
+    event_types: list[str]
+    mean_latency_ms: float
+    effective_fps: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "condition": self.condition,
+            "total_frames": self.total_frames,
+            "accepted_frames": self.accepted_frames,
+            "skipped_frames": self.skipped_frames,
+            "qualified_events_count": self.qualified_events_count,
+            "event_types": self.event_types,
+            "mean_latency_ms": round(self.mean_latency_ms, 2),
+            "effective_fps": round(self.effective_fps, 2),
+        }
+
+
+class PipelinePerturbationEvaluator:
+    """Evaluates end-to-end proctoring engine stability under controlled synthetic perturbations."""
+
+    @staticmethod
+    def evaluate_stream(
+        frames: list[np.ndarray],
+        condition: str = VisualCondition.ORIGINAL,
+        intensity: float = 1.0,
+        enable_objects: bool = True,
+    ) -> PipelineRobustnessSummary:
+        """Run a stream of frames through ProctoringEngine under a perturbation condition."""
+        from proctoring.config import SessionConfig
+        from proctoring.engine import ProctoringEngine
+
+        config = SessionConfig(
+            session_id=f"robustness_{condition}",
+            student_name="Robustness Test Candidate",
+            enable_face_detection=True,
+            enable_face_verification=False,
+            enable_object_detection=enable_objects,
+            enable_facial_dynamics=True,
+            enable_hand_analysis=True,
+            enable_wearable_detection=False,
+            capture_evidence=False,
+        )
+
+        engine = ProctoringEngine(config=config)
+        t_start = cv2.getTickCount()
+
+        for idx, orig_frame in enumerate(frames):
+            ts = float(idx) * 0.1
+            if condition == VisualCondition.ORIGINAL:
+                transformed = orig_frame
+            else:
+                transformed = ImageAugmenter.apply_condition(
+                    orig_frame, condition, intensity=intensity
+                )
+
+            engine.process_frame(transformed, timestamp_seconds=ts)
+
+        summary = engine.finalize_session()
+        elapsed_sec = (cv2.getTickCount() - t_start) / cv2.getTickFrequency()
+        effective_fps = len(frames) / elapsed_sec if elapsed_sec > 0 else 0.0
+
+        types = [e.event_type.value for e in summary.events if e.status == EventStatus.QUALIFIED]
+        mean_lat = summary.telemetry.latency_overall.mean_ms
+
+        return PipelineRobustnessSummary(
+            condition=condition,
+            total_frames=len(frames),
+            accepted_frames=summary.processed_frames,
+            skipped_frames=summary.skipped_frames,
+            qualified_events_count=summary.qualified_events,
+            event_types=types,
+            mean_latency_ms=mean_lat,
+            effective_fps=effective_fps,
+        )

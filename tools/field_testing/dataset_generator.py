@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from proctoring.core.events import EventType
+from tools.benchmark.robustness import ImageAugmenter, VisualCondition
 from tools.field_testing.schema import (
     CameraMetadata,
     EnvironmentMetadata,
@@ -17,7 +18,6 @@ from tools.field_testing.schema import (
     IndependentAnnotation,
     LightingCondition,
 )
-from tools.research.robustness import ImageAugmenter, VisualCondition
 
 
 @dataclass

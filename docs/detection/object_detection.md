@@ -45,17 +45,17 @@ It establishes a clean separation between **Local Development** (architecture, c
 
 ## 3. Installation & Dependency Separation
 
-### A. Local Machine (Coding, Linting, Unit Testing)
+### A. Local Machine (Core runtime & Testing)
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
-### B. Kaggle / GPU Runtime (Model Execution & Benchmarking)
+### B. GPU Runtime / Full Multi-Modal Environment
 ```bash
-pip install -r requirements-kaggle.txt
+pip install -e ".[kaggle]"    # or: pip install -e ".[all]"
 ```
 
-`requirements-kaggle.txt` includes PyTorch, torchvision, and Ultralytics without polluting the local lightweight virtual environment.
+Using standard extras in `pyproject.toml` installs PyTorch, torchvision, and Ultralytics without requiring ad-hoc requirements files.
 
 ---
 

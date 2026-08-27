@@ -18,7 +18,10 @@ requires_model = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def analyzer():
-    a = FacialDynamicsAnalyzer()
+    # Above the articulation sampling floor, so speech measurements are actually
+    # taken. At the 4 fps default the analyzer correctly declines to judge speech
+    # at all, which would make these assertions vacuous.
+    a = FacialDynamicsAnalyzer(sampling_fps=8.0)
     yield a
     a.close()
 
@@ -115,23 +118,37 @@ def test_static_face_is_never_reported_as_speaking(analyzer):
     assert result.is_speaking is False
 
 
-def test_speech_requires_oscillation_not_just_movement():
+def _speech_analyzer(window: int = 8):
+    """An analyzer with only the articulation state the discriminator needs.
+
+    Built without loading the landmark model so the speech logic can be exercised
+    on synthetic activation series.
+    """
+    from collections import deque
+
+    analyzer = FacialDynamicsAnalyzer.__new__(FacialDynamicsAnalyzer)
+    analyzer.speech_window_frames = window
+    analyzer.speech_articulation_amplitude = 0.18
+    analyzer.speech_min_crossings = 3
+    analyzer.speech_closed_ratio = 0.45
+    # Above the articulation floor, so the discriminator actually runs. Below it the
+    # analyzer declines to answer at all — covered in test_detection_accuracy.py.
+    analyzer.sampling_fps = 8.0
+    analyzer.speech_min_sampling_fps = 6.0
+    analyzer._mouth_history = deque(maxlen=window)
+    return analyzer
+
+
+def test_speech_requires_repeated_articulation_not_just_movement():
     """A single sustained mouth opening (a yawn) must not register as speech.
 
     Drives the articulation logic directly with a controlled activation series, so
     the discriminator is tested independently of the landmark model.
     """
-    analyzer = FacialDynamicsAnalyzer.__new__(FacialDynamicsAnalyzer)
-    analyzer.speech_window_frames = 8
-    analyzer.speech_movement_threshold = 0.05
-    analyzer.speech_min_oscillations = 2
-    from collections import deque
-
-    analyzer._mouth_history = deque(maxlen=8)
-
+    analyzer = _speech_analyzer()
     from proctoring.analysis.facial_dynamics import FacialDynamicsResult
 
-    # A monotonic ramp: large total movement, but no direction reversals.
+    # A monotonic ramp: large total movement, but the mouth only ever opens.
     ramp = FacialDynamicsResult()
     for value in [0.0, 0.12, 0.24, 0.36, 0.48, 0.60, 0.72, 0.84]:
         analyzer._measure_speech(ramp, np.zeros((1, 2), np.float32), {"jawOpen": value})
@@ -147,15 +164,9 @@ def test_speech_requires_oscillation_not_just_movement():
 
 def test_speech_verdict_withheld_until_enough_history():
     """With too few frames the analyzer reports no verdict rather than guessing."""
-    from collections import deque
-
     from proctoring.analysis.facial_dynamics import FacialDynamicsResult
 
-    analyzer = FacialDynamicsAnalyzer.__new__(FacialDynamicsAnalyzer)
-    analyzer.speech_window_frames = 8
-    analyzer.speech_movement_threshold = 0.05
-    analyzer.speech_min_oscillations = 2
-    analyzer._mouth_history = deque(maxlen=8)
+    analyzer = _speech_analyzer()
 
     result = FacialDynamicsResult()
     analyzer._measure_speech(result, np.zeros((1, 2), np.float32), {"jawOpen": 0.3})

@@ -69,7 +69,7 @@ Colab pre-installs the standard `opencv-python` package, which conflicts with `o
 
 ```bash
 !pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python opencv-contrib-python-headless
-!pip install -r requirements.txt
+!pip install -e ".[all]"
 ```
 
 ### 4. Acquire Model Weights
@@ -84,8 +84,8 @@ Download the official ONNX models into `models/` (since model weights are gitign
 * Write model checkpoints and training logs to `/content/drive/MyDrive/AI_Proctoring/models/` and `experiments/`.
 * Save final evaluation metrics and plots to `/content/drive/MyDrive/AI_Proctoring/results/`.
 
-### 5. Sync Code Refinements
-* Any algorithmic improvements or reusable utility functions developed during Colab experimentation should be refactored into the `src/` directory and committed back to GitHub.
+### 6. Sync Code Refinements
+* Any algorithmic improvements or reusable utility functions developed during Colab experimentation should be refactored into the `proctoring/` directory and committed back to GitHub.
 
 ---
 
@@ -93,11 +93,11 @@ Download the official ONNX models into `models/` (since model weights are gitign
 
 | Asset Type | Storage Target | Tracked in Git? |
 | :--- | :--- | :--- |
-| Python Source Code (`src/`) | GitHub | **Yes** |
-| Configuration Files (`configs/`) | GitHub | **Yes** |
+| Python Source Code (`proctoring/`) | GitHub | **Yes** |
+| Evaluation Tools (`tools/`) | GitHub | **Yes** |
 | Unit & Integration Tests (`tests/`) | GitHub | **Yes** |
 | Documentation (`docs/`) | GitHub | **Yes** |
-| Notebook Templates (`notebooks/`) | GitHub | **Yes** |
+| Standalone Scripts (`scripts/`) | GitHub | **Yes** |
 | Raw / Processed Datasets | Google Drive (`datasets/`) | **NO** (Gitignored) |
 | Model Weights (`.pt`, `.onnx`, etc.) | Google Drive (`models/`) | **NO** (Gitignored) |
 | Experiment Logs & Checkpoints | Google Drive (`experiments/`) | **NO** (Gitignored) |

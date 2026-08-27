@@ -16,8 +16,17 @@ The engine records observations for a human proctor to review.  It does not
 compute suspicion scores and does not decide whether misconduct occurred.
 """
 
+from proctoring.analysis.policy import ExamMode, ExamPolicy, StrictnessLevel
 from proctoring.config import SessionConfig
+from proctoring.core.events import (
+    EventCategory,
+    EventRecord,
+    EventSeverity,
+    EventStatus,
+    EventType,
+)
 from proctoring.engine import (
+    EngineState,
     FaceStatus,
     FrameObservation,
     ProctoringEngine,
@@ -27,10 +36,19 @@ from proctoring.engine import (
 __version__ = "1.0.0"
 
 __all__ = [
+    "ExamMode",
+    "ExamPolicy",
+    "StrictnessLevel",
     "SessionConfig",
+    "EngineState",
     "ProctoringEngine",
     "FrameObservation",
     "FaceStatus",
     "SessionSummary",
+    "EventType",
+    "EventSeverity",
+    "EventStatus",
+    "EventCategory",
+    "EventRecord",
     "__version__",
 ]

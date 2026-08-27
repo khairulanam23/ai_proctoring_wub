@@ -135,13 +135,28 @@ class SessionEvidencePackage:
             event_counts[e.event_type.value] = event_counts.get(e.event_type.value, 0) + 1
             severity_counts[e.severity.value] = severity_counts.get(e.severity.value, 0) + 1
 
+        # Candidate observations and equipment faults are counted apart. A manifest
+        # that reports one total invites a reviewer to read "7 events" as "7 things
+        # the candidate did", when some of them are a camera that froze.
+        candidate_events = [e for e in events if not e.is_technical]
+        technical_events = [e for e in events if e.is_technical]
+
         event_summary = {
             "total_events": len(events),
+            "candidate_observations": len(candidate_events),
+            "technical_diagnostics": len(technical_events),
             "qualified_events": sum(
                 1 for e in events if e.metadata.get("is_duration_qualified", True)
             ),
+            "qualified_candidate_observations": sum(
+                1 for e in candidate_events if e.metadata.get("is_duration_qualified", True)
+            ),
             "counts_by_type": event_counts,
             "counts_by_severity": severity_counts,
+            "counts_by_category": {
+                "CANDIDATE_OBSERVATION": len(candidate_events),
+                "TECHNICAL_DIAGNOSTIC": len(technical_events),
+            },
         }
 
         # 6. Summarize evidence assets & calculate file checksums

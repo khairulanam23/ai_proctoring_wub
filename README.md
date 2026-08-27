@@ -126,7 +126,9 @@ print(summary.package_dir, summary.integrity_verified)
 ```
 proctoring/                The pipeline — one installable package, one engine
 ├── config.py              SessionConfig: every tunable, grouped by stage
-├── engine.py              ProctoringEngine: the workflow, end to end
+├── engine.py              ProctoringEngine: the workflow orchestrator
+├── engine_stages.py       StageCoordinator: face, object, and behavioural execution
+├── engine_evidence.py     EvidenceCoordinator: retention buffer, evidence linking, reviews
 ├── observation.py         FrameObservation: what a single frame measured
 ├── core/                  Event schema, error handling, path safety
 ├── capture/               Camera discovery, webcam stream, video sampling
@@ -141,12 +143,11 @@ proctoring/                The pipeline — one installable package, one engine
 
 tools/                     Offline evaluation — not part of a live session
 ├── harness.py             Engine wrapper adding lifecycle statistics
-├── benchmark/             Accuracy and threshold benchmarking
+├── benchmark/             Accuracy, thresholds, robustness and profiling
 ├── field_testing/         Simulated field trials and long-session studies
 ├── hardening/             Stress, recovery and package-verification suites
 ├── audit/                 Regression suite and requirement audit tables
-├── optimization/          Ablation study and before/after comparison
-└── research/              Superseded single-modality prototypes, kept for reference
+└── optimization/          Ablation study and before/after comparison
 
 scripts/                   Standalone CLI utilities (model download, analysis)
 tests/                     Mirrors proctoring/, plus tests/tools/
@@ -190,6 +191,32 @@ gaze and hand-position observations that carry a high false-positive rate.
 
 Raising strictness raises false positives. That is a deliberate trade — see the
 [accuracy and performance guide](docs/accuracy_and_performance.md) before choosing.
+
+### Technical faults are separated structurally
+
+Every event carries a `category`: `CANDIDATE_OBSERVATION` or `TECHNICAL_DIAGNOSTIC`.
+A camera that froze, a detector that threw, a dropped connection and an operator
+pause are facts about the **equipment**, never about the candidate. They are counted
+separately in `manifest.json`, flagged `is_technical` in the review contract, and
+reported regardless of strictness — a lenient profile must not hide the faults that
+explain why observations are missing.
+
+A detector that fails leaves the frame `NOT_MEASURED`. It never produces `NO_FACE`
+against a candidate who is sitting there.
+
+### Session lifecycle
+
+The engine's processing state (`EngineState`) and the LMS attempt state
+(`SessionState`) are deliberately distinct types:
+
+```
+EngineState   CREATED → CALIBRATING → RUNNING ⇄ PAUSED → FINALIZED | CANCELLED
+SessionState  CREATED → ENROLLING → ACTIVE ⇄ PAUSED → FINALIZING → COMPLETED | FAILED
+```
+
+Paused frames are rejected before any inference runs, and the pause and resume are
+written to the event record so the resulting gap in observations is explained
+rather than left for a reviewer to interpret.
 
 ### Event severity is triage, not scoring
 
@@ -235,6 +262,21 @@ pre-commit hooks with `pre-commit install`.
 The Moodle plugin itself is not built. The integration boundary it will use
 (`proctoring/integration/`) exists, is versioned, and is tested — see the
 integration guide.
+
+## Measured performance
+
+CPU only, 640×480, real face imagery. Reproduce with `python scripts/benchmark_pipeline.py`.
+
+| Configuration | FPS | mean | p50 | p95 | p99 | RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| Core (face + identity) | 49.8 | 20.1 ms | 19.2 ms | 26.6 ms | 34.7 ms | 137 MB |
+| + facial dynamics | 30.3 | 33.0 ms | 31.9 ms | 40.0 ms | 44.0 ms | 263 MB |
+| Full behavioural (default) | 19.0 | 52.6 ms | 51.5 ms | 62.7 ms | 68.4 ms | 349 MB |
+
+At the default 4 fps sampling rate the per-frame budget is 250 ms, so the full
+pipeline uses about a quarter of it — roughly 4 concurrent sessions per core.
+Memory is bounded by design: the evidence buffer is capped
+(`max_retained_evidence_frames`, default 200) and released at finalisation.
 
 ## Honest limits
 

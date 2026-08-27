@@ -31,6 +31,7 @@ dev = [
     "ruff>=0.6.0",
     "mypy>=1.11.0",
 ]
+kaggle = ["ai-proctoring[detection,plots]"]
 all = ["ai-proctoring[behaviour,detection,plots]"]
 
 [project.scripts]
@@ -51,7 +52,7 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-exclude = [".venv", "data", "models", "tools/research"]
+exclude = [".venv", "data", "models", "colab"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RET", "ARG"]
@@ -66,8 +67,6 @@ ignore = [
 "tests/*" = ["ARG", "B011", "F841"]
 # Scripts bootstrap sys.path before importing the package, which E402 flags.
 "scripts/*" = ["E402"]
-# Superseded single-modality prototypes, kept for reference rather than maintained.
-"tools/research/*" = ["ALL"]
 # Evaluation harnesses build large literal report structures.
 "tools/*" = ["ARG", "B007", "F841", "C408", "E741", "SIM105", "RET504"]
 

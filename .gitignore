@@ -34,6 +34,7 @@ Thumbs.db
 .ruff_cache/
 .coverage
 htmlcov/
+*.egg-info/
 
 # Logs
 *.log

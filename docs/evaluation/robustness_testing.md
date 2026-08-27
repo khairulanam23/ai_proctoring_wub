@@ -13,7 +13,7 @@ Rather than modifying models blindly, Phase 6 provides concrete empirical evalua
 
 ## 1. Robustness Test Matrix & Synthetic Visual Conditions
 
-The `ImageAugmenter` framework in `tools/research/robustness.py` generates controlled, repeatable visual transformations to test detection resilience:
+The `ImageAugmenter` framework in `tools/benchmark/robustness.py` generates controlled, repeatable visual transformations to test detection resilience:
 
 | Visual Condition | Physical Exam Simulation | Detection Behavior Observed |
 | :--- | :--- | :--- |

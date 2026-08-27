@@ -24,6 +24,7 @@ import numpy as np
 
 from proctoring.core.paths import sanitise_identifier
 from proctoring.integration.schemas import SessionState
+from proctoring.storage import ProctoringStorage
 
 LOGGER = logging.getLogger(__name__)
 
@@ -75,13 +76,16 @@ class SessionStore:
     def __init__(self, storage_dir: str | Path = "data/proctoring_sessions") -> None:
         self.storage_dir = Path(storage_dir)
         self.sessions_dir = self.storage_dir / "sessions"
-        self.enrolment_dir = self.storage_dir / "enrolments"
+        # Enrolment is delegated rather than duplicated: ProctoringStorage owns the
+        # single identity store, so reference images and the embeddings derived from
+        # them live together and are erased together.
+        self.storage = ProctoringStorage(self.storage_dir)
+        self.enrolment_dir = self.storage.students_root
         self._records: dict[str, SessionRecord] = {}
         self._lock = threading.RLock()
 
     def _ensure_dirs(self) -> None:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        self.enrolment_dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _safe_path(directory: Path, identifier: str, suffix: str) -> Path:
@@ -156,42 +160,35 @@ class SessionStore:
     # Enrolment templates (biometric data — server-side only)
     # ------------------------------------------------------------------
 
-    def save_enrolment(self, enrolment_id: str, templates: builtins.list[np.ndarray]) -> bool:
-        """Store a candidate's reference embeddings under an opaque identifier."""
-        if not templates:
+    def save_enrolment(
+        self,
+        enrolment_id: str,
+        templates: builtins.list[np.ndarray],
+        images: builtins.list[np.ndarray] | None = None,
+    ) -> bool:
+        """Store a candidate's reference embeddings, and their images when supplied.
+
+        Delegates to :class:`ProctoringStorage` so the service and the CLI share one
+        identity store rather than writing to two places that can disagree.
+        """
+        if not templates and not images:
             return False
         try:
-            self._ensure_dirs()
-            np.savez_compressed(
-                self._safe_path(self.enrolment_dir, enrolment_id, ".npz"),
-                **{f"t{i}": t for i, t in enumerate(templates)},
-            )
+            self.storage.save_enrollment(enrolment_id, images, templates)
             return True
         except Exception as exc:
             LOGGER.error("Enrolment save failed for %s: %s", enrolment_id, exc)
             return False
 
     def load_enrolment(self, enrolment_id: str) -> builtins.list[np.ndarray]:
-        """Load a candidate's reference embeddings, or an empty list if absent."""
-        path = self._safe_path(self.enrolment_dir, enrolment_id, ".npz")
-        if not path.exists():
-            return []
-        try:
-            with np.load(path) as archive:
-                return [archive[key] for key in sorted(archive.files)]
-        except Exception as exc:
-            LOGGER.error("Enrolment load failed for %s: %s", enrolment_id, exc)
-            return []
+        """Load a candidate's reference embeddings, or an empty list if unusable."""
+        return self.storage.load_templates(enrolment_id)
 
     def delete_enrolment(self, enrolment_id: str) -> bool:
-        """Erase a candidate's stored biometric templates.
+        """Erase a candidate's stored reference images and embeddings.
 
         Present so an erasure request can be honoured without hunting through the
         filesystem; hosts should call it when a candidate withdraws consent or when
         a retention period expires.
         """
-        path = self._safe_path(self.enrolment_dir, enrolment_id, ".npz")
-        if path.exists():
-            path.unlink()
-            return True
-        return False
+        return self.storage.delete_enrollment(enrolment_id)

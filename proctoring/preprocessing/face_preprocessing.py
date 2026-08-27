@@ -9,7 +9,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from proctoring.detection.face_detector import FaceDetection, FaceDetector
+from proctoring.detection.face_detector import FaceDetection
 
 
 class PreprocessingStatus(str, Enum):
@@ -124,7 +124,7 @@ class FacePreprocessor:
 
     def __init__(
         self,
-        detector: FaceDetector | None = None,
+        detector: Any | None = None,
         output_size: tuple[int, int] = (112, 112),
         min_face_size: int = 40,
         min_blur_score: float = 15.0,
@@ -134,7 +134,12 @@ class FacePreprocessor:
         clahe_tile_grid: tuple[int, int] = (4, 4),
         max_yaw_deviation: float = 0.25,  # Deviation from 0.50 (e.g. < 0.25 or > 0.75 triggers extreme pose)
     ) -> None:
-        self.detector = detector if detector is not None else FaceDetector()
+        if detector is not None:
+            self.detector = detector
+        else:
+            from proctoring.detection.face_detector import FaceDetector
+
+            self.detector = FaceDetector()
         self.output_size = output_size
         self.min_face_size = min_face_size
         self.min_blur_score = min_blur_score

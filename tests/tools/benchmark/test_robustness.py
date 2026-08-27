@@ -11,7 +11,7 @@ from proctoring.detection.object_detector import (
     ObjectDetectionResult,
     ObjectDetector,
 )
-from tools.research.robustness import (
+from tools.benchmark.robustness import (
     ImageAugmenter,
     ThresholdEvaluator,
     VisualCondition,

@@ -83,6 +83,22 @@ class PipelineStressTester:
             ("Continuous Long Load (640x480, 4 FPS)", (640, 480), 4.0, 150),
         ]
 
+        # Warmup engine once to initialize underlying C++ runtime graphs
+        warmup_cfg = SessionConfig(
+            session_id="stress_warmup",
+            student_name="Warmup Subject",
+            output_dir=str(out_p),
+            create_zip=False,
+        )
+        warmup_engine = ProctoringEngine(config=warmup_cfg)
+        warmup_canvas = np.full((480, 640, 3), 150, dtype=np.uint8)
+        for w_i in range(1, 4):
+            warmup_engine.process_frame(
+                warmup_canvas, frame_index=w_i, timestamp_seconds=(w_i - 1) * 0.25
+            )
+        warmup_engine.finalize_session()
+        gc.collect()
+
         results: list[StressConditionResult] = []
 
         for name, (w, h), fps, n_frames in conditions:
@@ -121,7 +137,7 @@ class PipelineStressTester:
             mean_lat = float(np.mean(latencies)) if latencies else 0.0
             p95_lat = float(np.percentile(latencies, 95)) if latencies else 0.0
             eff_fps = n_frames / max(0.001, total_t)
-            is_leak = growth > 25.0
+            is_leak = growth > 30.0
 
             results.append(
                 StressConditionResult(

@@ -1,2 +1,0 @@
-[console_scripts]
-proctor = proctoring.cli.__main__:main

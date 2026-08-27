@@ -13,7 +13,8 @@ from typing import Any
 
 import numpy as np
 
-from proctoring.analysis.policy import ExamPolicy, StrictnessLevel
+from proctoring.analysis.policy import ExamMode, ExamPolicy, StrictnessLevel
+from proctoring.core.events import EventType
 from proctoring.core.paths import resolve_within, sanitise_identifier
 
 # Sentinel distinguishing "caller left this alone" from "caller chose a value that
@@ -37,6 +38,7 @@ class SessionConfig:
     # ------------------------------------------------------------------
     session_id: str = "exam_session"
     student_name: str = "Candidate"
+    exam_mode: ExamMode = ExamMode.DIGITAL_SCREEN
 
     # ------------------------------------------------------------------
     # Stage 2 — Camera / frame input
@@ -51,6 +53,11 @@ class SessionConfig:
 
     idle_fps: float = 2.0
     active_fps: float = 4.0
+
+    speech_sampling_applied: bool = field(default=False, init=False)
+    """Set when the sampling rate was raised to make speech-like activity
+    measurable. Recorded in the manifest so the rate a session actually ran at is
+    never a mystery to whoever reads it later."""
 
     # ------------------------------------------------------------------
     # Stage 3 — Frame validation & preprocessing
@@ -127,7 +134,11 @@ class SessionConfig:
     wearable_detection_interval_frames: int = 8
     """Run the wearable detector once every N sampled frames. A device worn during
     an exam stays on for minutes, so sampling loses nothing while keeping the
-    per-frame budget intact."""
+    per-frame budget intact.
+
+    Scaled automatically if the sampling rate is raised for speech measurement, so
+    the sweep keeps the same wall-clock cadence rather than becoming more frequent
+    as a side effect of an unrelated setting."""
 
     facial_dynamics_model: str = "models/face_landmarker.task"
     hand_model: str = "models/hand_landmarker.task"
@@ -193,7 +204,7 @@ class SessionConfig:
         # Resolve the strictness preset unless the caller supplied a policy of their
         # own, then fill in only the thresholds the caller genuinely left unset.
         if self._policy is None:
-            self._policy = ExamPolicy.for_level(self.strictness)
+            self._policy = ExamPolicy.for_level(self.strictness, mode=self.exam_mode)
 
         policy = self._policy
         if self.min_event_duration_seconds is _UNSET:
@@ -206,6 +217,51 @@ class SessionConfig:
         self.absence_tolerance_seconds = max(0.0, float(self.absence_tolerance_seconds))
         self.min_event_duration_seconds = max(0.0, float(self.min_event_duration_seconds))
         self.phone_confidence_threshold = float(self.phone_confidence_threshold)
+
+        self._apply_speech_sampling_floor(policy)
+
+    def _apply_speech_sampling_floor(self, policy: ExamPolicy) -> None:
+        """Raise the sampling rate when this exam reports speech-like mouth activity.
+
+        Articulation happens at roughly 3-5 Hz. Sampled at the 4 fps default it
+        aliases into a slow wave shaped exactly like a yawn, and no threshold placed
+        downstream can undo that — the measurement is lost at the point of sampling.
+
+        An exam that has asked to observe speaking therefore has its rate raised to
+        the policy's floor, including the adaptive idle rate: a candidate who has
+        been sitting quietly is exactly the one about to start talking, and dropping
+        to 2 fps while idle would make the very moment of interest unmeasurable.
+
+        Sessions that do not report speaking — ``STANDARD``, or any profile with
+        facial dynamics disabled — keep their configured rate and pay nothing for
+        this. The adjustment is recorded in the manifest rather than applied
+        silently.
+        """
+        if not self.enable_facial_dynamics:
+            return
+        if not policy.allows(EventType.CANDIDATE_SPEAKING):
+            return
+
+        floor = max(0.1, float(policy.speech_min_sampling_fps))
+        if self.sampling_fps >= floor and self.idle_fps >= floor:
+            return
+
+        previous_fps = self.sampling_fps
+        self.sampling_fps = max(self.sampling_fps, floor)
+        self.idle_fps = max(self.idle_fps, floor)
+        self.active_fps = max(self.active_fps, self.sampling_fps)
+        self.speech_sampling_applied = True
+
+        # The wearable sweep cadence is configured in frames but is really a
+        # wall-clock decision — a worn device stays on for minutes, and sweeping it
+        # more often buys nothing. Scaling the interval keeps that cadence fixed, so
+        # raising the rate for speech does not quietly raise the cost of the most
+        # expensive detector in the pipeline along with it.
+        if self.sampling_fps > previous_fps > 0:
+            scale = self.sampling_fps / previous_fps
+            self.wearable_detection_interval_frames = max(
+                1, round(self.wearable_detection_interval_frames * scale)
+            )
 
     @property
     def package_dir(self) -> Path:
@@ -225,7 +281,7 @@ class SessionConfig:
     def policy(self) -> ExamPolicy:
         """The resolved examination policy governing this session."""
         if self._policy is None:
-            self._policy = ExamPolicy.for_level(self.strictness)
+            self._policy = ExamPolicy.for_level(self.strictness, mode=self.exam_mode)
         return self._policy
 
     @property
@@ -251,11 +307,13 @@ class SessionConfig:
         return {
             "session_id": self.session_id,
             "student_name": self.student_name,
+            "exam_mode": self.exam_mode.value,
             "sampling": {
                 "sampling_fps": self.sampling_fps,
                 "enable_adaptive_sampling": self.enable_adaptive_sampling,
                 "idle_fps": self.idle_fps,
                 "active_fps": self.active_fps,
+                "raised_for_speech_measurement": self.speech_sampling_applied,
             },
             "preprocessing": {
                 "enabled": self.enable_preprocessing,

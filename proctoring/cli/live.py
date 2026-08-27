@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -32,6 +33,11 @@ from proctoring.detection.face_detector import FaceDetector
 from proctoring.detection.face_verifier import FaceVerifier
 from proctoring.detection.object_detector import ObjectDetector
 from proctoring.engine import FaceStatus, FrameObservation, ProctoringEngine
+from proctoring.storage import (
+    ENROLLMENT_IMAGE_COUNT,
+    EnrollmentState,
+    ProctoringStorage,
+)
 
 WINDOW_TITLE = "AI Proctoring — Live Session"
 
@@ -122,18 +128,25 @@ def load_detectors(
 # ---------------------------------------------------------------------------
 
 
-def enroll_candidate(
+def capture_enrollment(
     capture: cv2.VideoCapture,
     face_detector: FaceDetector,
     face_verifier: FaceVerifier,
-    sample_count: int = 5,
-) -> list[np.ndarray]:
-    """Capture reference embeddings for the candidate before the session starts.
+    storage: ProctoringStorage,
+    student: str,
+    sample_count: int = ENROLLMENT_IMAGE_COUNT,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Capture a student's reference photographs and the embeddings derived from them.
 
-    Several samples are taken a short interval apart rather than one, so the
-    enrolment template spans a little natural pose and lighting variation.  A
-    single-frame enrolment makes the threshold brittle: the candidate leaning back
-    or turning slightly then reads as an identity mismatch.
+    Returns ``(images, templates)``. Several samples are taken a short interval
+    apart rather than one, so the reference set spans a little natural pose and
+    lighting variation: a single-frame enrolment makes the threshold brittle, and
+    the candidate leaning back then reads as an identity mismatch.
+
+    Frames are staged to disk as they are taken so an interrupted enrolment can be
+    inspected, and the staging area is cleared on every exit path — including
+    abandonment — so a partial capture never accumulates or masquerades as a
+    finished enrolment.
     """
     print("\n" + "-" * 62)
     print("  ENROLMENT — look directly at the camera")
@@ -142,6 +155,7 @@ def enroll_candidate(
     print("-" * 62)
 
     templates: list[np.ndarray] = []
+    images: list[np.ndarray] = []
     auto_mode = False
     last_auto = 0.0
 
@@ -182,8 +196,9 @@ def enroll_candidate(
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
-            print("  Enrolment skipped.")
-            break
+            print("  Enrolment cancelled.")
+            storage.cleanup_staging(student)
+            return [], []
         if key == ord("a"):
             auto_mode = True
 
@@ -192,16 +207,89 @@ def enroll_candidate(
             try:
                 embedding = face_verifier.extract_feature(frame, face=result.faces[0])
                 templates.append(embedding)
+                images.append(frame.copy())
+                storage.stage_image(student, len(images), frame)
                 last_auto = time.time()
                 print(f"  Captured reference sample {len(templates)}/{sample_count}")
             except Exception as exc:
                 print(f"  Sample rejected: {exc}")
 
-    if templates:
-        print(f"  Enrolment complete — {len(templates)} template(s) registered.\n")
+    if len(templates) < sample_count:
+        # An enrolment that stopped short is not a usable reference set. Discard it
+        # rather than storing something identity verification would judge against.
+        print(f"  Enrolment incomplete ({len(templates)}/{sample_count}); nothing stored.\n")
+        storage.cleanup_staging(student)
+        return [], []
+
+    print(f"  Captured {len(templates)} reference sample(s).\n")
+    return images, templates
+
+
+def resolve_enrollment(
+    storage: ProctoringStorage,
+    student: str,
+    capture: cv2.VideoCapture,
+    face_detector: FaceDetector | None,
+    face_verifier: FaceVerifier | None,
+    sample_count: int = ENROLLMENT_IMAGE_COUNT,
+    force: bool = False,
+) -> list[np.ndarray]:
+    """Return the student's reference templates, capturing them only if needed.
+
+    This is the whole point of enrolling once. A student who already has a valid
+    reference set is not asked to sit through another capture: their stored
+    references are loaded and reused. New photographs are taken only when there is
+    no usable enrolment — or when the operator explicitly asks to replace one.
+
+    An enrolment that exists but is damaged is never used silently. Verifying a
+    candidate against a half-written or altered reference set produces
+    confident-looking mismatches, so a damaged set is reported and re-captured.
+    """
+    record = storage.load_enrollment(student)
+
+    if record.is_usable and not force:
+        print(f"\n  Student '{student}' is already enrolled.")
+        print(f"    references : {len(record.image_paths)} image(s) in {record.directory}")
+        print(f"    enrolled   : {record.created_at_utc or 'unknown'}")
+        print("    Reusing the existing reference set — no new capture needed.")
+        print("    Use --re-enroll to replace it.\n")
+        return record.templates
+
+    if record.state is EnrollmentState.MISSING:
+        print(f"\n  No enrolment found for '{student}'. Capturing a reference set.")
+    elif force:
+        print(f"\n  Replacing the existing enrolment for '{student}' (--re-enroll).")
     else:
-        print("  No enrolment templates — identity verification will report UNVERIFIED.\n")
-    return templates
+        # Say plainly what was wrong; a silent re-capture hides a data problem.
+        print(f"\n  Existing enrolment for '{student}' is unusable ({record.state.value}):")
+        for problem in record.problems[:4]:
+            print(f"    - {problem}")
+        print("    Re-capturing rather than verifying against a damaged reference set.")
+
+    if face_detector is None or face_verifier is None:
+        print("  Cannot enrol: the face detector and verifier are both required.\n")
+        return []
+
+    images, templates = capture_enrollment(
+        capture, face_detector, face_verifier, storage, student, sample_count
+    )
+    if not templates:
+        return []
+
+    try:
+        stored = storage.save_enrollment(
+            student,
+            images,
+            templates,
+            model={"detector": "YuNet", "verifier": "SFace"},
+        )
+    except Exception as exc:
+        print(f"  Enrolment could not be stored: {exc}\n")
+        return []
+
+    print(f"  Enrolment stored: {len(stored.image_paths)} reference image(s) in {stored.directory}")
+    print("  Temporary capture files removed.\n")
+    return stored.templates
 
 
 # ---------------------------------------------------------------------------
@@ -463,19 +551,45 @@ def run_live_session(args: argparse.Namespace) -> int:
     cv2.namedWindow(WINDOW_TITLE, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_TITLE, args.width, args.height)
 
+    storage = ProctoringStorage(args.data_root)
+    # Clear anything a previously interrupted enrolment left staged.
+    storage.purge_all_staging()
+
     templates: list[np.ndarray] = []
-    if args.enroll and face_verifier is not None:
-        templates = enroll_candidate(capture, face_detector, face_verifier, args.enroll_samples)
+    if args.enroll or args.re_enroll:
+        templates = resolve_enrollment(
+            storage,
+            args.student,
+            capture,
+            face_detector,
+            face_verifier,
+            args.enroll_samples,
+            force=args.re_enroll,
+        )
+    else:
+        # Even without --enroll, reuse a stored reference set if the student has one:
+        # identity verification should not silently switch off because a flag was
+        # omitted on a later run.
+        templates = storage.load_templates(args.student)
+        if templates:
+            print(
+                f"\n  Loaded existing enrolment for '{args.student}' "
+                f"({len(templates)} reference template(s)).\n"
+            )
+
+    # One session, one directory, named for the student and the real start time.
+    session_started = datetime.now()
+    session_id = args.session_id or storage.session_id(args.student, session_started)
 
     config = SessionConfig(
-        session_id=args.session_id,
+        session_id=session_id,
         student_name=args.student,
         strictness=args.strictness,
         sampling_fps=args.fps,
         enable_facial_dynamics=not args.no_behaviour,
         enable_hand_analysis=not args.no_behaviour,
         enable_wearable_detection=args.detect_wearables,
-        output_dir=args.output_dir,
+        output_dir=args.output_dir or storage.sessions_root,
         reference_templates=templates,
         enable_face_verification=bool(templates) and face_verifier is not None,
         enable_object_detection=object_detector is not None,
@@ -501,6 +615,7 @@ def run_live_session(args: argparse.Namespace) -> int:
         f"\nStrictness: {config.strictness.value}   "
         f"Behavioural analysis: {', '.join(behaviour_status) or 'none available'}"
     )
+    _report_capabilities(config, engine)
     print(f"Session '{config.session_id}' starting — press 'q' in the video window to stop.\n")
     engine.start_session()
 
@@ -579,6 +694,53 @@ def run_live_session(args: argparse.Namespace) -> int:
     return 0
 
 
+def _report_capabilities(config: SessionConfig, engine: ProctoringEngine) -> None:
+    """State what this session can and cannot observe, before it starts.
+
+    A detector that runs while the strictness profile discards everything it finds
+    is the worst of both worlds: the cost is paid, the operator believes the
+    behaviour is covered, and nothing is ever reported. That combination is easy to
+    reach by accident — ``--detect-wearables`` at ``STANDARD`` does exactly it — so
+    it is said out loud here rather than discovered from an empty evidence package
+    after the exam is over.
+    """
+    policy = config.policy
+
+    if config.speech_sampling_applied:
+        print(
+            f"  Sampling raised to {config.sampling_fps:.0f} fps so speech-like mouth "
+            f"activity is measurable (articulation needs at least "
+            f"{policy.speech_min_sampling_fps:.0f} fps)."
+        )
+    elif (
+        config.enable_facial_dynamics
+        and policy.allows(EventType.CANDIDATE_SPEAKING)
+        and config.sampling_fps < policy.speech_min_sampling_fps
+    ):
+        print(
+            f"  NOTE: at {config.sampling_fps:.1f} fps speech-like mouth activity cannot be "
+            f"measured; it will be recorded as not measured, never as silence."
+        )
+
+    if config.enable_wearable_detection:
+        wearable_events = {
+            EventType.HEADPHONES_DETECTED: "headphones",
+            EventType.EARBUDS_SUSPECTED: "earbuds/earphones",
+            EventType.SMARTWATCH_DETECTED: "smart watches",
+        }
+        muted = [name for event, name in wearable_events.items() if not policy.allows(event)]
+        if muted:
+            print(
+                f"  NOTE: worn-device detection is on, but {config.strictness.value} does not "
+                f"report {', '.join(muted)}. Use --strictness STRICT to have them recorded."
+            )
+        detector = engine.wearable_detector
+        if detector is not None and getattr(detector, "enable_ear_region_zoom", False):
+            print("  Ear regions are magnified for a second pass, to find small earpieces.")
+    elif policy.allows(EventType.EARBUDS_SUSPECTED):
+        print("  NOTE: earphone/headphone detection is off. Enable it with --detect-wearables.")
+
+
 def _print_summary(summary) -> None:
     """Report what the session produced, in the order the workflow produced it."""
     print("\n" + "=" * 62)
@@ -634,8 +796,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--session-id",
-        default=f"live_{time.strftime('%Y%m%d_%H%M%S')}",
-        help="Identifier for this session and its evidence package.",
+        default=None,
+        help="Override the session directory name (default: <student>_<YYYY-MM-DD_HH-MM-SS-mmm>).",
     )
     parser.add_argument(
         "--student", default="Candidate", help="Candidate name recorded in the manifest."
@@ -650,6 +812,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--enroll",
         action="store_true",
         help="Capture the candidate's reference face before starting (enables identity verification).",
+    )
+    parser.add_argument(
+        "--re-enroll",
+        action="store_true",
+        help="Replace an existing enrolment with a freshly captured reference set.",
+    )
+    parser.add_argument(
+        "--data-root",
+        default="data",
+        help="Root directory for student enrolments and session evidence.",
     )
     parser.add_argument(
         "--enroll-samples",
@@ -693,8 +865,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-dir",
-        default="data/results/live_sessions",
-        help="Directory to write the evidence package into.",
+        default=None,
+        help="Directory to write session evidence into (default: <data-root>/sessions).",
     )
     parser.add_argument(
         "--zip", action="store_true", help="Also produce a .zip archive of the package."

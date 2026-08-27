@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from proctoring.core.events import EventType
-from tools.research.robustness import ImageAugmenter, VisualCondition
+from tools.benchmark.robustness import ImageAugmenter, VisualCondition
 
 
 class EvaluationCategory(str, Enum):

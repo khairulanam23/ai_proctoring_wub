@@ -19,6 +19,10 @@ from proctoring.analysis.hands import (
     HandAnalyzer,
     HandObservation,
 )
+from proctoring.analysis.head_movement import (
+    HeadMovementPattern,
+    HeadMovementTracker,
+)
 from proctoring.analysis.observer import BehaviourObserver
 from proctoring.analysis.policy import (
     BEHAVIOURAL_SEVERITY,
@@ -39,6 +43,8 @@ __all__ = [
     "HandAnalyzer",
     "HandAnalysisResult",
     "HandObservation",
+    "HeadMovementTracker",
+    "HeadMovementPattern",
     "ExamPolicy",
     "StrictnessLevel",
     "BEHAVIOURAL_SEVERITY",

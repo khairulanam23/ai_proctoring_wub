@@ -34,9 +34,12 @@ class ActiveIncident:
     bounding_boxes: list[tuple[int, int, int, int]] = field(default_factory=list)
     representative_bbox: tuple[int, int, int, int] | None = None
     best_confidence: float = 0.0
+    best_quality_score: float = 0.0
     best_frame_index: int = 0
     best_timestamp: float = 0.0
     detail_description: str | None = None
+    correlations: list[dict[str, Any]] = field(default_factory=list)
+    status: EventStatus = EventStatus.OPEN
 
     def add_observation(
         self,
@@ -45,8 +48,11 @@ class ActiveIncident:
         confidence: float,
         bbox: tuple[int, int, int, int] | None = None,
         similarity_score: float | None = None,
+        blur_variance: float | None = None,
+        correlation: dict[str, Any] | None = None,
+        required_duration: float = 0.0,
     ) -> None:
-        """Update incident with a new frame observation."""
+        """Update incident with a new frame observation and maintain lifecycle state."""
         self.last_seen_timestamp = timestamp
         self.timestamps.append(timestamp)
         self.frame_indices.append(frame_index)
@@ -55,13 +61,27 @@ class ActiveIncident:
             self.bounding_boxes.append(bbox)
         if similarity_score is not None:
             self.similarity_score = similarity_score
+        if correlation is not None:
+            self.correlations.append(correlation)
 
-        if confidence >= self.best_confidence:
-            self.best_confidence = confidence
+        # Composite quality score: confidence (60%) + sharpness (40%)
+        sharpness_norm = min(1.0, (blur_variance or 50.0) / 150.0)
+        quality = confidence * 0.6 + sharpness_norm * 0.4
+
+        if quality >= self.best_quality_score or self.best_quality_score == 0.0:
+            self.best_quality_score = quality
+            self.best_confidence = max(confidence, self.best_confidence)
             self.best_frame_index = frame_index
             self.best_timestamp = timestamp
             if bbox is not None:
                 self.representative_bbox = bbox
+
+        # Lifecycle state progression: OPEN -> ACTIVE -> QUALIFIED
+        duration = max(0.0, self.last_seen_timestamp - self.start_timestamp)
+        if required_duration > 0.0 and duration >= required_duration:
+            self.status = EventStatus.QUALIFIED
+        elif len(self.frame_indices) > 1:
+            self.status = EventStatus.ACTIVE
 
 
 class UnifiedTemporalAggregator:
@@ -76,6 +96,8 @@ class UnifiedTemporalAggregator:
         EventType.MULTIPLE_FACES: EventSeverity.HIGH,
         EventType.UNKNOWN_FACE: EventSeverity.HIGH,
         EventType.FACE_MISMATCH: EventSeverity.HIGH,
+        EventType.FACE_OCCLUDED: EventSeverity.MEDIUM,
+        EventType.CAMERA_OBSTRUCTED: EventSeverity.CRITICAL,
         EventType.PERSON_ENTERED_FRAME: EventSeverity.INFO,
         EventType.PERSON_LEFT_FRAME: EventSeverity.INFO,
         EventType.PHONE_DETECTED: EventSeverity.HIGH,
@@ -94,8 +116,12 @@ class UnifiedTemporalAggregator:
         EventType.HEADPHONES_DETECTED: EventSeverity.HIGH,
         EventType.EARBUDS_SUSPECTED: EventSeverity.MEDIUM,
         EventType.SMARTWATCH_DETECTED: EventSeverity.MEDIUM,
+        EventType.SESSION_PAUSED: EventSeverity.INFO,
+        EventType.SESSION_RESUMED: EventSeverity.INFO,
         EventType.SYSTEM_ERROR: EventSeverity.HIGH,
         EventType.DETECTOR_ERROR: EventSeverity.HIGH,
+        EventType.CAMERA_FRAME_FROZEN: EventSeverity.HIGH,
+        EventType.CAMERA_DISCONNECTED: EventSeverity.HIGH,
         EventType.OTHER_SUSPICIOUS_ACTIVITY: EventSeverity.LOW,
     }
 
@@ -168,7 +194,12 @@ class UnifiedTemporalAggregator:
             active_types.add(EventType.MULTIPLE_FACES)
             if enrolled_present is False:
                 active_types.add(EventType.UNKNOWN_FACE)
-        elif face_status in ("UNKNOWN_FACE", "UNKNOWN_PERSON_ONLY", "FACE_MISMATCH"):
+        elif face_status in (
+            "UNKNOWN_FACE",
+            "UNKNOWN_PERSON_ONLY",
+            "FACE_MISMATCH",
+            "IDENTITY_MISMATCH",
+        ):
             active_types.add(EventType.UNKNOWN_FACE)
 
         primary_confidence = confidences[0] if (confidences and len(confidences) > 0) else 1.0
@@ -221,6 +252,25 @@ class UnifiedTemporalAggregator:
                 )
                 self.active_incidents[key] = incident
 
+    @staticmethod
+    def _box_iou(
+        box_a: tuple[int, int, int, int] | None,
+        box_b: tuple[int, int, int, int] | None,
+    ) -> float:
+        """Compute Intersection over Union between two (x1, y1, x2, y2) boxes."""
+        if box_a is None or box_b is None:
+            return 0.0
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+        intersection = float(iw * ih)
+        area_a = float(max(0, ax2 - ax1) * max(0, ay2 - ay1))
+        area_b = float(max(0, bx2 - bx1) * max(0, by2 - by1))
+        union = area_a + area_b - intersection
+        return intersection / union if union > 0 else 0.0
+
     def update_object_observations(
         self,
         detected_objects: list[
@@ -229,15 +279,19 @@ class UnifiedTemporalAggregator:
         timestamp: float,
         frame_index: int,
         detector: DetectorInfo,
+        blur_variance: float | None = None,
     ) -> None:
-        """Process detected objects for a frame."""
-        seen_classes: set[str] = set()
+        """Process detected objects for a frame using IoU spatial persistence."""
+        seen_keys: set[str] = set()
+
+        # Find all current active object incident keys
+        active_obj_keys = [k for k in self.active_incidents if k.startswith("object_")]
 
         for obj in detected_objects:
             c_name = str(obj.get("class_name", "")).strip().lower()
             conf = float(obj.get("confidence", 0.0))
             raw_bbox = obj.get("bbox")
-            bbox = tuple(raw_bbox) if raw_bbox is not None else None
+            bbox = tuple(int(v) for v in raw_bbox) if raw_bbox is not None else None
 
             if c_name == "person":
                 continue  # Person counts are handled via person presence
@@ -247,17 +301,47 @@ class UnifiedTemporalAggregator:
             else:
                 event_type = EventType.PROHIBITED_OBJECT
 
-            key = f"object_{c_name}"
-            seen_classes.add(key)
+            required_dur = self.min_duration_for(event_type)
 
-            if key in self.active_incidents:
-                self.active_incidents[key].add_observation(
+            # Match against existing active incidents of matching class via IoU
+            matched_key: str | None = None
+            best_iou = 0.0
+
+            for k in active_obj_keys:
+                inc = self.active_incidents[k]
+                if inc.object_class == c_name and k not in seen_keys:
+                    iou = self._box_iou(bbox, inc.representative_bbox)
+                    if iou > best_iou:
+                        best_iou = iou
+                        matched_key = k
+
+            # If no strict IoU match but only one incident of this class exists, associate
+            if matched_key is None:
+                class_keys = [
+                    k
+                    for k in active_obj_keys
+                    if self.active_incidents[k].object_class == c_name and k not in seen_keys
+                ]
+                if len(class_keys) == 1:
+                    matched_key = class_keys[0]
+
+            if matched_key is not None:
+                seen_keys.add(matched_key)
+                self.active_incidents[matched_key].add_observation(
                     timestamp=timestamp,
                     frame_index=frame_index,
                     confidence=conf,
                     bbox=bbox,
+                    blur_variance=blur_variance,
+                    required_duration=required_dur,
                 )
             else:
+                key = f"object_{c_name}"
+                if key in self.active_incidents:
+                    # Disambiguate multiple instances of same class
+                    key = f"object_{c_name}_{frame_index}"
+
+                seen_keys.add(key)
                 severity = self.severity_map.get(event_type, EventSeverity.MEDIUM)
                 incident = ActiveIncident(
                     event_type=event_type,
@@ -276,13 +360,14 @@ class UnifiedTemporalAggregator:
                     frame_index=frame_index,
                     confidence=conf,
                     bbox=bbox,
+                    blur_variance=blur_variance,
+                    required_duration=required_dur,
                 )
                 self.active_incidents[key] = incident
 
         # Check for inactive object incidents
-        object_keys = [k for k in self.active_incidents if k.startswith("object_")]
-        for k in object_keys:
-            if k not in seen_classes:
+        for k in active_obj_keys:
+            if k not in seen_keys:
                 incident = self.active_incidents[k]
                 if (timestamp - incident.last_seen_timestamp) > self.absence_tolerance_seconds:
                     self._close_incident(k)
@@ -316,6 +401,7 @@ class UnifiedTemporalAggregator:
             confidence = float(detail.get("confidence", 1.0))
             raw_bbox = detail.get("bbox")
             bbox = tuple(int(v) for v in raw_bbox) if raw_bbox is not None else None
+            required_dur = self.min_duration_for(event_type)
 
             if key in self.active_incidents:
                 self.active_incidents[key].add_observation(
@@ -323,6 +409,7 @@ class UnifiedTemporalAggregator:
                     frame_index=frame_index,
                     confidence=confidence,
                     bbox=bbox,
+                    required_duration=required_dur,
                 )
                 continue
 
@@ -343,6 +430,7 @@ class UnifiedTemporalAggregator:
                 frame_index=frame_index,
                 confidence=confidence,
                 bbox=bbox,
+                required_duration=required_dur,
             )
             # Carry the analyzer's own wording through to the closed event so the
             # observation text explains what was measured, not just which flag fired.
@@ -463,10 +551,12 @@ class UnifiedTemporalAggregator:
                 "required_duration_seconds": round(required_duration, 3),
                 "best_frame_index": inc.best_frame_index,
                 "best_timestamp": inc.best_timestamp,
+                "best_quality_score": round(inc.best_quality_score, 3),
                 "representative_bbox": list(inc.representative_bbox)
                 if inc.representative_bbox is not None
                 else None,
                 "total_observations": len(inc.frame_indices),
+                "correlations": inc.correlations if inc.correlations else None,
             },
             status=status,
         )
