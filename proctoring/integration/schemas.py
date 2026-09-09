@@ -26,7 +26,7 @@ CONTRACT_VERSION = "1.0"
 
 
 class SessionState(str, Enum):
-    """Lifecycle of a proctored attempt, mirroring a Moodle quiz attempt."""
+    """Lifecycle of a proctored attempt, mirroring a host examination platform."""
 
     CREATED = "CREATED"  # Registered, no frames yet
     ENROLLING = "ENROLLING"  # Capturing the candidate's reference face
@@ -37,16 +37,31 @@ class SessionState(str, Enum):
     FAILED = "FAILED"  # Aborted; any partial package is marked as such
 
 
+class SyncStatus(str, Enum):
+    """Synchronization status between engine and remote Exam Controller."""
+
+    LOCAL_DURABLE = "LOCAL_DURABLE"
+    PENDING_SYNC = "PENDING_SYNC"
+    SYNCING = "SYNCING"
+    SYNCHRONIZED = "SYNCHRONIZED"
+    SYNC_FAILED = "SYNC_FAILED"
+
+
 @dataclass
 class StartSessionRequest:
-    """Open a proctoring session for one quiz attempt.
+    """Open a proctoring session for one exam candidate.
 
-    ``attempt_id`` and ``user_id`` are the host's own identifiers, echoed back on
-    every response so the plugin can correlate without keeping its own map.
+    Supports platform-neutral concepts (exam_id, candidate_id, session_id,
+    organization_id) while preserving legacy LMS aliases (attempt_id, user_id,
+    quiz_id, course_id).
     """
 
-    attempt_id: str
-    user_id: str
+    attempt_id: str | None = None
+    user_id: str | None = None
+    exam_id: str | None = None
+    candidate_id: str | None = None
+    session_id: str | None = None
+    organization_id: str | None = None
     course_id: str | None = None
     quiz_id: str | None = None
     candidate_name: str = "Candidate"
@@ -54,16 +69,56 @@ class StartSessionRequest:
     sampling_fps: float = 4.0
     enable_wearable_detection: bool = False
     enrolment_id: str | None = None
-    """Reference to a previously stored enrolment template, if the candidate has one."""
-
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.attempt_id is not None:
+            self.attempt_id = str(self.attempt_id)
+        if self.session_id is not None:
+            self.session_id = str(self.session_id)
+        if self.user_id is not None:
+            self.user_id = str(self.user_id)
+        if self.candidate_id is not None:
+            self.candidate_id = str(self.candidate_id)
+        if self.quiz_id is not None:
+            self.quiz_id = str(self.quiz_id)
+        if self.exam_id is not None:
+            self.exam_id = str(self.exam_id)
+
+        if not self.attempt_id and self.session_id:
+            self.attempt_id = self.session_id
+        if not self.session_id and self.attempt_id:
+            self.session_id = self.attempt_id
+        if not self.session_id:
+            self.session_id = "sess_" + str(int(datetime.now(timezone.utc).timestamp()))
+            self.attempt_id = self.session_id
+
+        if not self.user_id and self.candidate_id:
+            self.user_id = self.candidate_id
+        if not self.candidate_id and self.user_id:
+            self.candidate_id = self.user_id
+        if not self.candidate_id:
+            self.candidate_id = "default_candidate"
+            self.user_id = self.candidate_id
+
+        if not self.quiz_id and self.exam_id:
+            self.quiz_id = self.exam_id
+        if not self.exam_id and self.quiz_id:
+            self.exam_id = self.quiz_id
+        if not self.exam_id:
+            self.exam_id = "default_exam"
+            self.quiz_id = self.exam_id
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "session_id": self.session_id,
             "attempt_id": self.attempt_id,
+            "candidate_id": self.candidate_id,
             "user_id": self.user_id,
-            "course_id": self.course_id,
+            "exam_id": self.exam_id,
             "quiz_id": self.quiz_id,
+            "course_id": self.course_id,
+            "organization_id": self.organization_id,
             "candidate_name": self.candidate_name,
             "strictness": self.strictness,
             "sampling_fps": self.sampling_fps,
@@ -75,10 +130,14 @@ class StartSessionRequest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StartSessionRequest":
         return cls(
-            attempt_id=str(data["attempt_id"]),
-            user_id=str(data["user_id"]),
+            session_id=data.get("session_id") or data.get("attempt_id"),
+            attempt_id=data.get("attempt_id") or data.get("session_id"),
+            candidate_id=data.get("candidate_id") or data.get("user_id"),
+            user_id=data.get("user_id") or data.get("candidate_id"),
+            exam_id=data.get("exam_id") or data.get("quiz_id"),
+            quiz_id=data.get("quiz_id") or data.get("exam_id"),
             course_id=data.get("course_id"),
-            quiz_id=data.get("quiz_id"),
+            organization_id=data.get("organization_id"),
             candidate_name=data.get("candidate_name", "Candidate"),
             strictness=data.get("strictness", "STANDARD"),
             sampling_fps=float(data.get("sampling_fps", 4.0)),
@@ -90,17 +149,15 @@ class StartSessionRequest:
 
 @dataclass
 class SessionHandle:
-    """Identifies an open session and reports what it is actually able to observe.
-
-    ``active_detectors`` and ``unavailable_detectors`` matter: a deployment missing
-    the MediaPipe models silently loses speech and hand analysis, and the host must
-    be able to tell a proctor that rather than implying full coverage.
-    """
+    """Identifies an open session and reports active capabilities."""
 
     session_id: str
     attempt_id: str
     user_id: str
     state: SessionState
+    exam_id: str = "default_exam"
+    candidate_id: str = "default_candidate"
+    organization_id: str | None = None
     contract_version: str = CONTRACT_VERSION
     started_at_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     strictness: str = "STANDARD"
@@ -113,6 +170,9 @@ class SessionHandle:
             "session_id": self.session_id,
             "attempt_id": self.attempt_id,
             "user_id": self.user_id,
+            "exam_id": self.exam_id,
+            "candidate_id": self.candidate_id,
+            "organization_id": self.organization_id,
             "state": self.state.value,
             "contract_version": self.contract_version,
             "started_at_utc": self.started_at_utc,
@@ -155,6 +215,10 @@ class FrameAck:
     """How long the client should wait before sending the next frame; follows the
     engine's adaptive sampling so a quiet session costs less bandwidth and CPU."""
 
+    evidence_id: str | None = None
+    evidence_sha256: str | None = None
+    evidence_file_path: str | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "session_id": self.session_id,
@@ -174,6 +238,9 @@ class FrameAck:
             "engine_state": self.engine_state,
             "processing_latency_ms": round(self.processing_latency_ms, 2),
             "next_frame_due_in_seconds": round(self.next_frame_due_in_seconds, 3),
+            "evidence_id": self.evidence_id,
+            "evidence_sha256": self.evidence_sha256,
+            "evidence_file_path": self.evidence_file_path,
         }
 
 
@@ -202,6 +269,10 @@ class ObservationSummary:
     """Set for observations a proctor must treat with extra caution — see
     :data:`RELIABILITY_NOTES`."""
 
+    sequence_number: int = 0
+    engine_version: str = "1.0.0"
+    sync_status: str = "LOCAL_DURABLE"
+
     evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -212,6 +283,9 @@ class ObservationSummary:
             "status": self.status,
             "category": self.category,
             "is_technical": self.category == "TECHNICAL_DIAGNOSTIC",
+            "sequence_number": self.sequence_number,
+            "engine_version": self.engine_version,
+            "sync_status": self.sync_status,
             "start_timestamp": round(self.start_timestamp, 3),
             "end_timestamp": round(self.end_timestamp, 3),
             "formatted_start": self.formatted_start,
@@ -222,6 +296,98 @@ class ObservationSummary:
             "confidence": round(self.confidence, 4),
             "reliability_note": self.reliability_note,
             "evidence": self.evidence,
+        }
+
+
+@dataclass
+class OutboxEventRecord:
+    """An event held in the offline synchronization outbox."""
+
+    event_id: str
+    session_id: str
+    sequence_number: int
+    event_type: str
+    timestamp: float
+    created_at_utc: str
+    payload: dict[str, Any]
+    sync_status: SyncStatus = SyncStatus.LOCAL_DURABLE
+    retry_count: int = 0
+    last_error: str | None = None
+    idempotency_key: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.idempotency_key:
+            self.idempotency_key = f"{self.session_id}:{self.sequence_number}:{self.event_id}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "session_id": self.session_id,
+            "sequence_number": self.sequence_number,
+            "event_type": self.event_type,
+            "timestamp": round(self.timestamp, 3),
+            "created_at_utc": self.created_at_utc,
+            "payload": self.payload,
+            "sync_status": self.sync_status.value if hasattr(self.sync_status, "value") else str(self.sync_status),
+            "retry_count": self.retry_count,
+            "last_error": self.last_error,
+            "idempotency_key": self.idempotency_key,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "OutboxEventRecord":
+        return cls(
+            event_id=data["event_id"],
+            session_id=data["session_id"],
+            sequence_number=int(data["sequence_number"]),
+            event_type=data["event_type"],
+            timestamp=float(data["timestamp"]),
+            created_at_utc=data.get("created_at_utc", ""),
+            payload=data.get("payload", {}),
+            sync_status=SyncStatus(data.get("sync_status", SyncStatus.LOCAL_DURABLE.value)),
+            retry_count=int(data.get("retry_count", 0)),
+            last_error=data.get("last_error"),
+            idempotency_key=data.get("idempotency_key", ""),
+        )
+
+
+@dataclass
+class SyncBatchAck:
+    """Response acknowledging idempotent ingestion of events by remote endpoint."""
+
+    session_id: str
+    synced_sequence_numbers: list[int]
+    duplicate_sequence_numbers: list[int]
+    failed_sequence_numbers: list[int] = field(default_factory=list)
+    server_timestamp_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "synced_sequence_numbers": self.synced_sequence_numbers,
+            "duplicate_sequence_numbers": self.duplicate_sequence_numbers,
+            "failed_sequence_numbers": self.failed_sequence_numbers,
+            "server_timestamp_utc": self.server_timestamp_utc,
+        }
+
+
+@dataclass
+class HealthResponse:
+    """Engine health, readiness, and model presence status."""
+
+    status: str
+    engine_version: str
+    models_loaded: dict[str, bool]
+    active_sessions_count: int
+    timestamp_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "engine_version": self.engine_version,
+            "models_loaded": self.models_loaded,
+            "active_sessions_count": self.active_sessions_count,
+            "timestamp_utc": self.timestamp_utc,
         }
 
 

@@ -106,6 +106,40 @@ class TimelineEntry:
             "processing_latency_ms": round(self.processing_latency_ms, 2),
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TimelineEntry":
+        return cls(
+            frame_index=int(data.get("frame_index", 0)),
+            timestamp_seconds=float(data.get("timestamp_seconds", 0.0)),
+            iso_timestamp=data.get("iso_timestamp", ""),
+            frame_accepted=bool(data.get("frame_accepted", True)),
+            rejection_reason=data.get("rejection_reason"),
+            was_enhanced=bool(data.get("was_enhanced", False)),
+            mean_luminance=data.get("mean_luminance"),
+            blur_variance=data.get("blur_variance"),
+            face_count=data.get("face_count"),
+            face_boxes=data.get("face_boxes", []),
+            identity_verified=data.get("identity_verified"),
+            cosine_similarity=data.get("cosine_similarity"),
+            face_status=data.get("face_status"),
+            prohibited_objects=data.get("prohibited_objects", []),
+            hands_detected=data.get("hands_detected"),
+            hand_near_face=data.get("hand_near_face"),
+            hand_near_ear=data.get("hand_near_ear"),
+            is_speaking=data.get("is_speaking"),
+            speech_activity=data.get("speech_activity"),
+            head_yaw=data.get("head_yaw"),
+            head_pitch=data.get("head_pitch"),
+            is_looking_away=data.get("is_looking_away"),
+            gaze_offset=data.get("gaze_offset"),
+            gaze_direction=data.get("gaze_direction"),
+            occlusion_state=data.get("occlusion_state"),
+            detected_wearables=data.get("detected_wearables", []),
+            active_event_types=data.get("active_event_types", []),
+            is_anomalous_state=bool(data.get("is_anomalous_state", False)),
+            processing_latency_ms=float(data.get("processing_latency_ms", 0.0)),
+        )
+
 
 class SessionTimeline:
     """Accumulates :class:`TimelineEntry` rows and summarises session continuity."""

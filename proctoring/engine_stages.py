@@ -17,6 +17,7 @@ import numpy as np
 from proctoring.analysis.facial_dynamics import FacialDynamicsAnalyzer
 from proctoring.analysis.hands import HandAnalyzer
 from proctoring.analysis.occlusion import FaceOcclusionClassifier
+from proctoring.analysis.paper import PaperDetector
 from proctoring.analysis.policy import ExamPolicy
 from proctoring.analysis.wearables import WearableAnalysisResult, WearableDetector
 from proctoring.config import SessionConfig
@@ -106,6 +107,7 @@ class StageCoordinator:
             )
 
         self.occlusion_classifier = FaceOcclusionClassifier()
+        self.paper_detector = PaperDetector()
 
         self._last_wearable_result: WearableAnalysisResult | None = None
         self._last_wearable_timestamp: float | None = None
@@ -392,6 +394,7 @@ class StageCoordinator:
                     face_bbox=dynamics.face_bbox if dynamics else None,
                     ear_regions=dynamics.ear_regions if dynamics else None,
                     mouth_region=dynamics.mouth_region if dynamics else None,
+                    timestamp_seconds=obs.timestamp_seconds,
                 )
                 per_model_times["hand_analysis"] = obs.hand_analysis.inference_ms
             except Exception as exc:
@@ -451,6 +454,13 @@ class StageCoordinator:
                 LOGGER.debug("Discarding stale wearable reading (%.1fs old)", age)
                 self._last_wearable_result = None
                 self._last_wearable_timestamp = None
+
+        # 5. Physical paper detection on desk workspace
+        try:
+            obs.paper_analysis = self.paper_detector.detect(frame, frame_index=obs.frame_index)
+            per_model_times["paper_detector"] = obs.paper_analysis.inference_ms
+        except Exception as exc:
+            LOGGER.debug("Paper detection failed at frame %s: %s", obs.frame_index, exc)
 
         timing.behaviour_analysis_ms = (time.perf_counter() - behaviour_start) * 1000.0
 

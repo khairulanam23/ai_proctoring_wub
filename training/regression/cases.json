@@ -1,0 +1,78 @@
+[
+  {
+    "case_id": "REG_001_PHONE_HAND_AMBIGUITY",
+    "category": "phone_vs_hand",
+    "description": "Empty splayed hand in writing area must not trigger confirmed PHONE_DETECTED.",
+    "inputs": {
+      "hand_detected": true,
+      "fingers_splayed": true,
+      "detected_object_class": "cell phone",
+      "raw_confidence": 0.52,
+      "aspect_ratio": 1.05
+    },
+    "expected_invariant": {
+      "prohibited_event_forbidden": "PHONE_DETECTED",
+      "allowed_events": ["PHONE_CANDIDATE_UNCERTAIN", "HAND_RESTING", null]
+    }
+  },
+  {
+    "case_id": "REG_002_AIRPODS_LOBULE_EARRING",
+    "category": "wearables_earbuds",
+    "description": "Punctate reflection at ear lobule must be categorized as other_ear_object rather than earbud.",
+    "inputs": {
+      "detected_wearable": "earbuds",
+      "rel_y_in_ear": 0.85,
+      "rel_h_in_ear": 0.15,
+      "rel_w_in_ear": 0.18,
+      "confidence": 0.35
+    },
+    "expected_invariant": {
+      "expected_category": "other_ear_object",
+      "must_not_categorize_as": "earbud_airpod"
+    }
+  },
+  {
+    "case_id": "REG_003_PHYSICAL_PAPER_WRITING_POSTURE",
+    "category": "paper_writing",
+    "description": "Candidate looking down at paper (-45 pitch) in physical paper mode must not trigger suspicious head pose.",
+    "inputs": {
+      "exam_mode": "PHYSICAL_PAPER",
+      "pitch_degrees": -45.0,
+      "yaw_degrees": 0.0,
+      "gaze_vertical": -0.55
+    },
+    "expected_invariant": {
+      "is_pose_deviated": false,
+      "is_gaze_deviated": false
+    }
+  },
+  {
+    "case_id": "REG_004_PAPER_QUADRILATERAL_GEOMETRY",
+    "category": "paper_geometry",
+    "description": "Standard A4 paper sheet on desk must be identified as paper_present with aspect ratio ~ 1.41.",
+    "inputs": {
+      "sheet_width": 150,
+      "sheet_height": 212,
+      "frame_height": 480,
+      "frame_width": 640
+    },
+    "expected_invariant": {
+      "paper_present": true,
+      "min_aspect_ratio": 1.30,
+      "max_aspect_ratio": 1.55
+    }
+  },
+  {
+    "case_id": "REG_005_OFFLINE_SYNC_DURABILITY",
+    "category": "persistence_sync",
+    "description": "Events queued during complete network disconnect must persist durably and synchronize idempotently upon reconnection.",
+    "inputs": {
+      "offline_events_count": 5,
+      "server_ack_received": true
+    },
+    "expected_invariant": {
+      "zero_event_loss": true,
+      "no_duplicate_logical_events": true
+    }
+  }
+]

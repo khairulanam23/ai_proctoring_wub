@@ -1,0 +1,81 @@
+{
+  "environment": {
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "python_version": "3.14.4",
+    "has_torch": true,
+    "torch_version": "2.14.0+cu130",
+    "cuda_available": true,
+    "cuda_device_name": "NVIDIA GeForce RTX 3060",
+    "cuda_device_count": 1,
+    "cuda_version_compiled": "13.0",
+    "opencv_version": "5.0.0",
+    "opencv_cuda_devices": 0
+  },
+  "model_accelerations": {
+    "yolo11n": {
+      "device": "cuda:0",
+      "is_gpu_accelerated": true,
+      "load_time_ms": 304.07,
+      "latency_mean_ms": 4.06,
+      "latency_p50_ms": 4.0,
+      "latency_p95_ms": 4.27,
+      "fps": 246.1
+    },
+    "yunet": {
+      "backend": "OpenCV DNN (CPU)",
+      "is_gpu_accelerated": false,
+      "reason": "OpenCV pip wheel compiled without CUDA DNN target; CPU execution is ~3ms.",
+      "load_time_ms": 4.14,
+      "latency_mean_ms": 14.89,
+      "latency_p95_ms": 15.23
+    },
+    "sface": {
+      "backend": "OpenCV DNN (CPU)",
+      "is_gpu_accelerated": false,
+      "reason": "OpenCV pip wheel compiled without CUDA DNN target; CPU execution is ~2.7ms.",
+      "load_time_ms": 100.36,
+      "latency_mean_ms": 12.98,
+      "latency_p95_ms": 13.36
+    },
+    "mediapipe_face": {
+      "backend": "MediaPipe Tasks (CPU XNNPACK)",
+      "is_gpu_accelerated": false,
+      "reason": "MediaPipe Tasks Python on Linux uses EGL OpenGL ES; CPU XNNPACK delegate is active.",
+      "load_time_ms": 329.17,
+      "latency_mean_ms": 1.79
+    },
+    "mediapipe_hands": {
+      "backend": "MediaPipe Tasks (CPU XNNPACK)",
+      "is_gpu_accelerated": false,
+      "reason": "MediaPipe Tasks Python on Linux uses EGL OpenGL ES; CPU XNNPACK delegate is active.",
+      "load_time_ms": 21.97,
+      "latency_mean_ms": 9.59
+    },
+    "paper_detector": {
+      "backend": "Algorithmic OpenCV / NumPy (CPU)",
+      "latency_mean_ms": 3.79
+    }
+  },
+  "benchmarks": {
+    "pipeline_runtime": {
+      "mean_latency_ms": 39.58,
+      "p50_latency_ms": 39.34,
+      "p95_latency_ms": 41.86,
+      "fps": 25.3,
+      "memory": {
+        "system_ram_mb": 1805.57,
+        "vram_allocated_mb": 52.34,
+        "vram_reserved_mb": 118.0
+      }
+    }
+  },
+  "comparison": {
+    "yolo11n_cpu": {
+      "device": "cpu",
+      "load_time_ms": 18.77,
+      "latency_mean_ms": 35.84,
+      "latency_p95_ms": 36.55,
+      "speedup_gpu_vs_cpu": 8.82
+    }
+  }
+}

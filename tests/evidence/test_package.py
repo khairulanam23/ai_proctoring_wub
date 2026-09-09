@@ -67,7 +67,21 @@ def test_package_creation_and_integrity_verification():
         assert is_ok is True
         assert len(errors) == 0
 
-        # Tamper with a file and verify it catches corruption
+        # Tamper with manifest.json directly and verify it catches manifest alteration
+        manifest_file = pkg_path / "manifest.json"
+        manifest_data = manifest_file.read_text(encoding="utf-8")
+        manifest_file.write_text(manifest_data.replace("Alice Smith", "Mallory Impostor"))
+        is_ok_manifest_tampered, manifest_tampered_errors = packager.verify_package_integrity()
+        assert is_ok_manifest_tampered is False
+        assert any("manifest.json" in err for err in manifest_tampered_errors)
+
+        # Restore manifest.json
+        manifest_file.write_text(manifest_data)
+        is_ok_restored, errors_restored = packager.verify_package_integrity()
+        assert is_ok_restored is True
+        assert len(errors_restored) == 0
+
+        # Tamper with an evidence/event file and verify it catches corruption
         events_file = pkg_path / "events.json"
         events_file.write_text("tampered content")
         is_ok_tampered, tampered_errors = packager.verify_package_integrity()

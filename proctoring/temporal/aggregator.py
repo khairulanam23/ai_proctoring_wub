@@ -1,10 +1,13 @@
-"""Unified temporal event aggregation for continuous multi-modal proctoring observations."""
-
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
+from proctoring.analysis.phone_disambiguation import (
+    PhoneClassification,
+    PhoneHandDisambiguator,
+)
 from proctoring.core.events import (
     DetectorInfo,
     EventRecord,
@@ -14,6 +17,8 @@ from proctoring.core.events import (
     ObservationDetail,
     format_seconds_to_timestamp,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -101,7 +106,16 @@ class UnifiedTemporalAggregator:
         EventType.PERSON_ENTERED_FRAME: EventSeverity.INFO,
         EventType.PERSON_LEFT_FRAME: EventSeverity.INFO,
         EventType.PHONE_DETECTED: EventSeverity.HIGH,
+        EventType.PHONE_CANDIDATE_UNCERTAIN: EventSeverity.LOW,
         EventType.PROHIBITED_OBJECT: EventSeverity.MEDIUM,
+        EventType.PAPER_PRESENT: EventSeverity.INFO,
+        EventType.PAPER_ABSENT: EventSeverity.LOW,
+        EventType.PAPER_MANIPULATED: EventSeverity.MEDIUM,
+        EventType.MULTIPLE_PAPERS_DETECTED: EventSeverity.MEDIUM,
+        EventType.HAND_WRITING: EventSeverity.INFO,
+        EventType.HAND_RESTING: EventSeverity.INFO,
+        EventType.HAND_LIFTED_FROM_PAPER: EventSeverity.LOW,
+        EventType.HAND_LEAVING_WRITING_AREA: EventSeverity.LOW,
         EventType.BROWSER_TAB_SWITCH: EventSeverity.CRITICAL,
         EventType.BROWSER_FULLSCREEN_EXIT: EventSeverity.HIGH,
         EventType.BROWSER_WINDOW_BLUR: EventSeverity.MEDIUM,
@@ -148,6 +162,7 @@ class UnifiedTemporalAggregator:
         self.active_incidents: dict[str, ActiveIncident] = {}
         self.closed_events: list[EventRecord] = []
         self._event_counter = 0
+        self.phone_disambiguator = PhoneHandDisambiguator()
 
     def _generate_event_id(self, event_type: EventType) -> str:
         self._event_counter += 1
@@ -280,6 +295,7 @@ class UnifiedTemporalAggregator:
         frame_index: int,
         detector: DetectorInfo,
         blur_variance: float | None = None,
+        hand_analysis: Any = None,
     ) -> None:
         """Process detected objects for a frame using IoU spatial persistence."""
         seen_keys: set[str] = set()
@@ -297,7 +313,19 @@ class UnifiedTemporalAggregator:
                 continue  # Person counts are handled via person presence
 
             if c_name in ("cell phone", "phone", "mobile phone"):
-                event_type = EventType.PHONE_DETECTED
+                dis = self.phone_disambiguator.disambiguate(
+                    phone_obj=obj, hand_analysis=hand_analysis, frame_index=frame_index
+                )
+                if dis.classification == PhoneClassification.HAND_FALSE_POSITIVE:
+                    LOGGER.debug("Dismissed phone candidate as hand false positive: %s", dis.reason)
+                    continue
+                elif dis.classification == PhoneClassification.UNCERTAIN_CANDIDATE:
+                    event_type = EventType.PHONE_CANDIDATE_UNCERTAIN
+                    c_name = "phone_candidate_uncertain"
+                    conf = dis.confidence
+                else:
+                    event_type = EventType.PHONE_DETECTED
+                    conf = dis.confidence
             else:
                 event_type = EventType.PROHIBITED_OBJECT
 

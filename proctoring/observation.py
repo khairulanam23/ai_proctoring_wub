@@ -11,6 +11,7 @@ from proctoring.analysis.facial_dynamics import FacialDynamicsResult
 from proctoring.analysis.gaze import GazeObservation
 from proctoring.analysis.hands import HandAnalysisResult
 from proctoring.analysis.occlusion import FaceOcclusionResult
+from proctoring.analysis.paper import PaperAnalysisResult
 from proctoring.analysis.wearables import WearableAnalysisResult
 from proctoring.preprocessing.camera_health import CameraHealthStatus
 from proctoring.telemetry.performance import FrameTimingRecord
@@ -83,6 +84,7 @@ class FrameObservation:
     occlusion: FaceOcclusionResult | None = None
     hand_analysis: HandAnalysisResult | None = None
     wearables: WearableAnalysisResult | None = None
+    paper_analysis: PaperAnalysisResult | None = None
 
     # Stage 7
     active_event_types: list[str] = field(default_factory=list)
@@ -133,5 +135,6 @@ class FrameObservation:
             "occlusion": self.occlusion.to_dict() if self.occlusion else None,
             "hand_analysis": self.hand_analysis.to_dict() if self.hand_analysis else None,
             "wearables": self.wearables.to_dict() if self.wearables else None,
+            "paper_analysis": self.paper_analysis.to_dict() if self.paper_analysis else None,
             "active_event_types": self.active_event_types,
         }

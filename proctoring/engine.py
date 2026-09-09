@@ -34,6 +34,7 @@ from proctoring.core.events import (
     EventType,
     coerce_event_type,
 )
+from proctoring.core.persistence import SessionCheckpoint, SessionJournalManager
 from proctoring.detection.face_detector import FaceDetection, FaceDetector
 from proctoring.detection.face_verifier import FaceVerifier
 from proctoring.detection.object_detector import ObjectDetector
@@ -72,8 +73,10 @@ class EngineState(str, Enum):
     CALIBRATING = "CALIBRATING"  # Performing neutral gaze/pose calibration
     RUNNING = "RUNNING"  # Active frame processing
     PAUSED = "PAUSED"  # Temporarily suspended by proctor or system
+    FINALIZING = "FINALIZING"  # Actively flushing evidence and writing tamper-evident manifest
     FINALIZED = "FINALIZED"  # Completed and tamper-evident sealed
     CANCELLED = "CANCELLED"  # Aborted prematurely without sealing
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"  # Interrupted uncleanly; checkpoint available for recovery
 
 
 @dataclass
@@ -238,6 +241,13 @@ class ProctoringEngine:
         self._start_perf: float | None = None
         self._frame_counter: int = 0
 
+        # --- Durable Persistence & Recovery Journal ---
+        self.journal = SessionJournalManager(self.evidence_manager.package_dir)
+        self._sequence_number: int = 0
+        self._persisted_events_count: int = 0
+        self.exam_id: str = getattr(self.config, "exam_id", "default_exam")
+        self.candidate_id: str = getattr(self.config, "candidate_id", "default_candidate")
+
     # ------------------------------------------------------------------
     # Detector Property Accessors
     # ------------------------------------------------------------------
@@ -323,6 +333,11 @@ class ProctoringEngine:
         self.evidence_manager = self._build_evidence_manager()
         self._evidence.evidence_manager = self.evidence_manager
 
+        self.journal = SessionJournalManager(self.evidence_manager.package_dir)
+        self._sequence_number = 0
+        self._persisted_events_count = 0
+        self._write_checkpoint(EngineState.RUNNING)
+
         LOGGER.info("Session %s started (strictness=%s)", self.session_id, self.policy.level.value)
 
     def pause(self, reason: str = "Proctor pause") -> None:
@@ -332,17 +347,24 @@ class ProctoringEngine:
             return
         self.state = EngineState.PAUSED
         self._record_session_control(EventType.SESSION_PAUSED, reason)
+        self._persist_new_events()
+        self._write_checkpoint(EngineState.PAUSED)
         LOGGER.info("Session %s paused: %s", self.session_id, reason)
 
     def resume(self, reason: str = "Proctor resume") -> None:
         """Resume session frame processing after a pause."""
-        if self.state != EngineState.PAUSED:
+        if self.state not in (EngineState.PAUSED, EngineState.RECOVERY_REQUIRED):
             LOGGER.warning(
-                "Session %s is not paused (current state: %s)", self.session_id, self.state.value
+                "Session %s is not paused or recovering (current state: %s)",
+                self.session_id,
+                self.state.value,
             )
             return
         self.state = EngineState.RUNNING
+        self.is_active = True
         self._record_session_control(EventType.SESSION_RESUMED, reason)
+        self._persist_new_events()
+        self._write_checkpoint(EngineState.RUNNING)
         LOGGER.info("Session %s resumed: %s", self.session_id, reason)
 
     def _record_detector_failure(
@@ -369,6 +391,7 @@ class ProctoringEngine:
                 ),
                 detector=self.session_control_info,
             )
+            self._persist_new_events()
         except Exception as exc:  # pragma: no cover - diagnostics must never abort a session
             LOGGER.warning("Could not record detector failure for %s: %s", stage, exc)
 
@@ -379,7 +402,7 @@ class ProctoringEngine:
         reviewer cannot tell it apart from a camera failure or a candidate who
         walked away. These are technical diagnostics, never misconduct.
         """
-        if not self.is_active:
+        if not self.is_active and self.state != EngineState.PAUSED:
             return
         elapsed = (time.perf_counter() - self._start_perf) if self._start_perf else 0.0
         try:
@@ -397,7 +420,63 @@ class ProctoringEngine:
         """Abort session without sealing final evidence package."""
         self.state = EngineState.CANCELLED
         self.is_active = False
+        self._write_checkpoint(EngineState.CANCELLED)
         LOGGER.info("Session %s cancelled: %s", self.session_id, reason)
+
+    def _write_checkpoint(
+        self,
+        state: EngineState,
+        last_frame_index: int = 0,
+        last_timestamp_seconds: float = 0.0,
+    ) -> None:
+        """Atomically persist session recovery checkpoint to disk."""
+        try:
+            processed = (
+                self.telemetry.processed_frames
+                if hasattr(self.telemetry, "processed_frames")
+                else self._frame_counter
+            )
+            checkpoint = SessionCheckpoint(
+                schema_version="1.0",
+                session_id=self.session_id,
+                student_name=self.student_name,
+                state=state.value,
+                started_at_iso=self.started_at_iso or datetime.now(timezone.utc).isoformat(),
+                last_checkpoint_utc=datetime.now(timezone.utc).isoformat(),
+                last_frame_index=last_frame_index or self._frame_counter,
+                last_timestamp_seconds=last_timestamp_seconds,
+                processed_frames=processed,
+                total_events=len(self.temporal_aggregator.closed_events),
+                sequence_number=self._sequence_number,
+                exam_id=self.exam_id,
+                candidate_id=self.candidate_id,
+                models_info={
+                    "face_detector": self.face_detector_info.to_dict(),
+                    "face_verifier": self.face_verifier_info.to_dict(),
+                    "object_detector": self.object_detector_info.to_dict(),
+                },
+                processing_config=self.config.to_dict(),
+            )
+            self.journal.write_checkpoint(checkpoint)
+        except Exception as exc:
+            LOGGER.warning("Failed to write checkpoint for session %s: %s", self.session_id, exc)
+
+    def _persist_new_events(self) -> list[EventRecord]:
+        """Progressively persist any newly closed events to disk and append to journal."""
+        total_closed = len(self.temporal_aggregator.closed_events)
+        if total_closed <= self._persisted_events_count:
+            return []
+        new_events = self.temporal_aggregator.closed_events[
+            self._persisted_events_count : total_closed
+        ]
+        for ev in new_events:
+            self._sequence_number += 1
+            ev.sequence_number = self._sequence_number
+            if self.config.capture_evidence:
+                self._evidence.attach_evidence_to_events([ev])
+            self.journal.append_event(ev)
+        self._persisted_events_count = total_closed
+        return new_events
 
     def calibrate_gaze(
         self,
@@ -606,6 +685,7 @@ class ProctoringEngine:
             timestamp=timestamp_seconds,
             frame_index=frame_index,
             detector=self.object_detector_info,
+            hand_analysis=obs.hand_analysis,
         )
         self.temporal_aggregator.update_behaviour_observations(
             active_behaviours=self.observer.map_to_events(obs),
@@ -629,6 +709,15 @@ class ProctoringEngine:
                 closed_events=self.temporal_aggregator.closed_events,
             )
 
+        # Progressive Durable Persistence: flush any closed events to disk immediately
+        spooled_events = self._persist_new_events()
+        if spooled_events or (self._frame_counter % 25 == 0):
+            self._write_checkpoint(
+                self.state,
+                last_frame_index=frame_index,
+                last_timestamp_seconds=timestamp_seconds,
+            )
+
         timing.total_frame_ms = (time.perf_counter() - t_start) * 1000.0
         self.telemetry.record_frame(timing, per_model_times=per_model_times)
         self._append_timeline(obs)
@@ -647,7 +736,7 @@ class ProctoringEngine:
         metadata: dict[str, Any] | None = None,
     ) -> EventRecord:
         """Record a client-reported browser or application event."""
-        return self.temporal_aggregator.record_instant_event(
+        event = self.temporal_aggregator.record_instant_event(
             event_type=coerce_event_type(event_type),
             timestamp=timestamp_seconds,
             frame_index=frame_index,
@@ -655,6 +744,8 @@ class ProctoringEngine:
             detector=self.browser_bridge_info,
             metadata=metadata,
         )
+        self._persist_new_events()
+        return event
 
     # ------------------------------------------------------------------
     # Offline Video Execution
@@ -687,15 +778,16 @@ class ProctoringEngine:
 
     def finalize_session(self) -> SessionSummary:
         """Close open incidents, attach and validate evidence, and seal the package."""
-        self.state = EngineState.FINALIZED
+        self.state = EngineState.FINALIZING
+        self._write_checkpoint(EngineState.FINALIZING)
         self.is_active = False
         ended_at_iso = datetime.now(timezone.utc).isoformat()
 
         # 1. Close incidents
         events = self.temporal_aggregator.flush()
 
-        # 2. Attach evidence frames
-        self._evidence.attach_evidence_to_events(events)
+        # 2. Persist any newly flushed events to journal and attach evidence
+        self._persist_new_events()
 
         # 3. Validate evidence on disk
         validation_report = self._evidence.validate_all(
@@ -732,6 +824,9 @@ class ProctoringEngine:
         self._evidence.clear()
         self.close_analyzers()
 
+        self.state = EngineState.FINALIZED
+        self._write_checkpoint(EngineState.FINALIZED)
+
         return SessionSummary(
             session_id=self.session_id,
             student_name=self.student_name,
@@ -763,41 +858,41 @@ class ProctoringEngine:
         """Record the frame's real observation on the session timeline (stage 10)."""
         if not self.config.record_timeline:
             return
-        self.timeline.append(
-            TimelineEntry(
-                frame_index=obs.frame_index,
-                timestamp_seconds=obs.timestamp_seconds,
-                iso_timestamp=obs.iso_timestamp,
-                frame_accepted=obs.accepted,
-                rejection_reason=obs.rejection_reason,
-                was_enhanced=obs.was_enhanced,
-                mean_luminance=obs.mean_luminance,
-                blur_variance=obs.blur_variance,
-                face_count=obs.face_count,
-                face_boxes=[list(b) for b in obs.face_boxes],
-                identity_verified=obs.identity_verified,
-                cosine_similarity=obs.similarity,
-                face_status=obs.face_status if obs.accepted else None,
-                prohibited_objects=obs.prohibited_object_names,
-                active_event_types=obs.active_event_types,
-                is_anomalous_state=obs.is_anomalous,
-                processing_latency_ms=obs.timing.total_frame_ms if obs.timing else 0.0,
-                hands_detected=obs.hands_detected,
-                hand_near_face=hands.hand_near_face if (hands := obs.hand_analysis) else None,
-                hand_near_ear=hands.hand_near_ear if hands else None,
-                is_speaking=dyn.is_speaking if (dyn := obs.facial_dynamics) else None,
-                speech_activity=dyn.speech_activity if dyn else None,
-                head_yaw=dyn.head_pose.yaw if (dyn and dyn.head_pose) else None,
-                head_pitch=dyn.head_pose.pitch if (dyn and dyn.head_pose) else None,
-                is_looking_away=dyn.is_looking_away if dyn else None,
-                gaze_offset=dyn.gaze_offset if dyn else None,
-                gaze_direction=obs.gaze.direction.value
-                if obs.gaze
-                else (dyn.gaze.direction.value if (dyn and dyn.gaze) else None),
-                occlusion_state=obs.occlusion.state.value if obs.occlusion else None,
-                detected_wearables=obs.wearable_names,
-            )
+        entry = TimelineEntry(
+            frame_index=obs.frame_index,
+            timestamp_seconds=obs.timestamp_seconds,
+            iso_timestamp=obs.iso_timestamp,
+            frame_accepted=obs.accepted,
+            rejection_reason=obs.rejection_reason,
+            was_enhanced=obs.was_enhanced,
+            mean_luminance=obs.mean_luminance,
+            blur_variance=obs.blur_variance,
+            face_count=obs.face_count,
+            face_boxes=[list(b) for b in obs.face_boxes],
+            identity_verified=obs.identity_verified,
+            cosine_similarity=obs.similarity,
+            face_status=obs.face_status if obs.accepted else None,
+            prohibited_objects=obs.prohibited_object_names,
+            active_event_types=obs.active_event_types,
+            is_anomalous_state=obs.is_anomalous,
+            processing_latency_ms=obs.timing.total_frame_ms if obs.timing else 0.0,
+            hands_detected=obs.hands_detected,
+            hand_near_face=hands.hand_near_face if (hands := obs.hand_analysis) else None,
+            hand_near_ear=hands.hand_near_ear if hands else None,
+            is_speaking=dyn.is_speaking if (dyn := obs.facial_dynamics) else None,
+            speech_activity=dyn.speech_activity if dyn else None,
+            head_yaw=dyn.head_pose.yaw if (dyn and dyn.head_pose) else None,
+            head_pitch=dyn.head_pose.pitch if (dyn and dyn.head_pose) else None,
+            is_looking_away=dyn.is_looking_away if dyn else None,
+            gaze_offset=dyn.gaze_offset if dyn else None,
+            gaze_direction=obs.gaze.direction.value
+            if obs.gaze
+            else (dyn.gaze.direction.value if (dyn and dyn.gaze) else None),
+            occlusion_state=obs.occlusion.state.value if obs.occlusion else None,
+            detected_wearables=obs.wearable_names,
         )
+        self.timeline.append(entry)
+        self.journal.append_timeline_entry(entry.to_dict())
 
     @staticmethod
     def _to_xywh(bbox: tuple[int, int, int, int] | None) -> tuple[int, int, int, int]:
@@ -847,3 +942,51 @@ class ProctoringEngine:
             frame_index=frame_index,
             timestamp_seconds=timestamp_seconds,
         )
+
+    # ------------------------------------------------------------------
+    # Mid-Session Crash Recovery
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def recover_session(cls, session_path: str | Path) -> "ProctoringEngine":
+        """Recover an interrupted or crashed session from its durable checkpoint and journals."""
+        path = Path(session_path)
+        session_dir = path if path.is_dir() else path.parent
+        journal = SessionJournalManager(session_dir)
+        checkpoint = journal.load_checkpoint()
+        if checkpoint is None:
+            raise FileNotFoundError(f"No session checkpoint found in {session_dir}")
+
+        cfg_dict = checkpoint.processing_config
+        config = SessionConfig.from_dict(cfg_dict) if cfg_dict else SessionConfig()
+        config.session_id = checkpoint.session_id
+        config.student_name = checkpoint.student_name
+
+        engine = cls(config=config)
+        engine.state = EngineState.RECOVERY_REQUIRED
+        engine.started_at_iso = checkpoint.started_at_iso
+        engine._sequence_number = checkpoint.sequence_number
+        engine._frame_counter = checkpoint.last_frame_index
+        engine.journal = journal
+
+        # Restore closed events from append-only journal
+        persisted_events = journal.read_events()
+        engine.temporal_aggregator.closed_events = persisted_events
+        engine._persisted_events_count = len(persisted_events)
+
+        # Restore timeline entries
+        for t_entry in journal.read_timeline():
+            engine.timeline.entries.append(TimelineEntry.from_dict(t_entry))
+
+        LOGGER.info(
+            "Session %s recovered successfully: state=%s, %d events, %d frames",
+            checkpoint.session_id,
+            engine.state.value,
+            len(persisted_events),
+            engine._frame_counter,
+        )
+        return engine
+
+    def finalize_recovered_session(self) -> SessionSummary:
+        """Seal an evidence package directly from recovered checkpoint and journal state."""
+        return self.finalize_session()

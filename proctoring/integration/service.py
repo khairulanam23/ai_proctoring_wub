@@ -204,6 +204,28 @@ class ProctoringService:
             observation = engine.process_frame(decoded, timestamp_seconds=timestamp_seconds)
         dynamics = observation.facial_dynamics
 
+        evidence_id = None
+        evidence_sha256 = None
+        evidence_file_path = None
+
+        has_incident = bool(
+            observation.active_event_types
+            or observation.prohibited_object_names
+            or (observation.face_count is not None and observation.face_count != 1)
+            or (dynamics and getattr(dynamics, "is_looking_away", False))
+        )
+
+        if has_incident and decoded is not None and decoded.size > 0:
+            ev_ref = engine.evidence_manager.capture_frame(
+                decoded,
+                frame_index=observation.frame_index,
+                timestamp_seconds=observation.timestamp_seconds,
+            )
+            if ev_ref:
+                evidence_id = ev_ref.evidence_id
+                evidence_sha256 = ev_ref.sha256
+                evidence_file_path = ev_ref.file_path
+
         return FrameAck(
             session_id=session_id,
             frame_index=observation.frame_index,
@@ -222,6 +244,9 @@ class ProctoringService:
             engine_state=engine.state.value,
             processing_latency_ms=observation.timing.total_frame_ms if observation.timing else 0.0,
             next_frame_due_in_seconds=1.0 / max(0.1, engine.target_fps),
+            evidence_id=evidence_id,
+            evidence_sha256=evidence_sha256,
+            evidence_file_path=evidence_file_path,
         )
 
     def record_client_event(
@@ -584,6 +609,11 @@ class ProctoringService:
     def _require_engine(self, session_id: str) -> ProctoringEngine:
         with self._lock:
             engine = self._engines.get(session_id)
+            if engine is None:
+                for sid, eng in self._engines.items():
+                    rec = self.store.get(sid)
+                    if rec and getattr(rec, "attempt_id", None) == session_id:
+                        return eng
         if engine is None:
             state = self.store.get(session_id)
             if state is None:
@@ -717,10 +747,13 @@ class ProctoringService:
 
         manifest_sha = None
         try:
-            import json
-
-            manifest = json.loads((Path(summary.package_dir) / "manifest.json").read_text())
-            manifest_sha = manifest.get("manifest_sha256")
+            sha_file = Path(summary.package_dir) / "manifest.sha256"
+            if sha_file.exists():
+                manifest_sha = sha_file.read_text().strip()
+            else:
+                import json
+                manifest = json.loads((Path(summary.package_dir) / "manifest.json").read_text())
+                manifest_sha = manifest.get("manifest_sha256")
         except Exception:
             pass
 

@@ -362,3 +362,68 @@ class SessionConfig:
             },
             "has_reference_identity": self.has_reference_identity,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SessionConfig":
+        """Reconstruct SessionConfig from dictionary representation."""
+        sampling = data.get("sampling", {})
+        preproc = data.get("preprocessing", {})
+        face_det = data.get("face_detection", {})
+        face_ver = data.get("face_verification", {})
+        obj_det = data.get("object_detection", {})
+        behav = data.get("behavioural_analysis", {})
+        temp = data.get("temporal_qualification", {})
+        evid = data.get("evidence", {})
+        out = data.get("output", {})
+
+        exam_mode_str = data.get("exam_mode", "DIGITAL_SCREEN")
+        try:
+            exam_mode = ExamMode(exam_mode_str)
+        except Exception:
+            exam_mode = ExamMode.DIGITAL_SCREEN
+
+        strictness_str = behav.get("strictness", "STANDARD")
+        try:
+            strictness = StrictnessLevel(strictness_str)
+        except Exception:
+            strictness = StrictnessLevel.STANDARD
+
+        policy = ExamPolicy.for_level(strictness, exam_mode)
+
+        return cls(
+            session_id=data.get("session_id", "exam_session"),
+            student_name=data.get("student_name", "Candidate"),
+            exam_mode=exam_mode,
+            sampling_fps=float(sampling.get("sampling_fps", data.get("sampling_fps", 4.0))),
+            enable_adaptive_sampling=bool(sampling.get("enable_adaptive_sampling", data.get("enable_adaptive_sampling", True))),
+            idle_fps=float(sampling.get("idle_fps", data.get("idle_fps", 2.0))),
+            active_fps=float(sampling.get("active_fps", data.get("active_fps", 8.0))),
+            enable_preprocessing=bool(preproc.get("enabled", data.get("enable_preprocessing", True))),
+            min_frame_width=int(preproc.get("min_frame_width", data.get("min_frame_width", 320))),
+            min_frame_height=int(preproc.get("min_frame_height", data.get("min_frame_height", 240))),
+            enable_face_detection=bool(face_det.get("enabled", data.get("enable_face_detection", True))),
+            face_score_threshold=float(face_det.get("score_threshold", data.get("face_score_threshold", 0.6))),
+            min_face_size_px=int(face_det.get("min_face_size_px", data.get("min_face_size_px", 40))),
+            enable_face_verification=bool(face_ver.get("enabled", data.get("enable_face_verification", True))),
+            face_match_threshold=float(face_ver.get("match_threshold", data.get("face_match_threshold", 0.3630))),
+            enable_object_detection=bool(obj_det.get("enabled", data.get("enable_object_detection", True))),
+            object_confidence_threshold=float(obj_det.get("confidence_threshold", data.get("object_confidence_threshold", 0.4))),
+            phone_confidence_threshold=float(obj_det.get("phone_confidence_threshold", data.get("phone_confidence_threshold", 0.4))),
+            book_confidence_threshold=float(obj_det.get("book_confidence_threshold", data.get("book_confidence_threshold", 0.35))),
+            enable_facial_dynamics=bool(behav.get("facial_dynamics", data.get("enable_facial_dynamics", True))),
+            enable_hand_analysis=bool(behav.get("hand_analysis", data.get("enable_hand_analysis", True))),
+            enable_wearable_detection=bool(behav.get("wearable_detection", data.get("enable_wearable_detection", False))),
+            wearable_detection_interval_frames=int(behav.get("wearable_detection_interval_frames", data.get("wearable_detection_interval_frames", 12))),
+            strictness=strictness,
+            _policy=policy,
+            absence_tolerance_seconds=float(temp.get("absence_tolerance_seconds", data.get("absence_tolerance_seconds", 0.5))),
+            min_event_duration_seconds=float(temp.get("min_event_duration_seconds", data.get("min_event_duration_seconds", 1.0))),
+            capture_evidence=bool(evid.get("capture_evidence", data.get("capture_evidence", True))),
+            crop_padding_ratio=float(evid.get("crop_padding_ratio", data.get("crop_padding_ratio", 0.1))),
+            jpeg_quality=int(evid.get("jpeg_quality", data.get("jpeg_quality", 95))),
+            capture_review_snapshots=bool(evid.get("capture_review_snapshots", data.get("capture_review_snapshots", True))),
+            prune_invalid_evidence=bool(evid.get("prune_invalid_evidence", data.get("prune_invalid_evidence", True))),
+            output_dir=Path(out.get("output_dir", data.get("output_dir", "data/evidence_packages"))),
+            create_zip=bool(out.get("create_zip", data.get("create_zip", True))),
+            record_timeline=bool(out.get("record_timeline", data.get("record_timeline", True))),
+        )

@@ -212,13 +212,18 @@ class SessionEvidencePackage:
         )
 
         manifest_path = self.package_dir / "manifest.json"
+        manifest_dict = manifest.to_dict()
+        # Ensure manifest_sha256 is None in the serialized manifest content to avoid self-referential mutation
+        manifest_dict["manifest_sha256"] = None
         with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest.to_dict(), f, indent=2)
+            json.dump(manifest_dict, f, indent=2)
 
-        # Calculate final manifest SHA256 and update
-        manifest.manifest_sha256 = self._compute_sha256(manifest_path)
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest.to_dict(), f, indent=2)
+        # Calculate final manifest SHA256 and store in detached checksum file
+        manifest_sha = self._compute_sha256(manifest_path)
+        manifest.manifest_sha256 = manifest_sha
+        sha_file_path = self.package_dir / "manifest.sha256"
+        with open(sha_file_path, "w", encoding="utf-8") as f:
+            f.write(f"{manifest_sha}  manifest.json\n")
 
         # Optional zip packaging
         if create_zip:
@@ -232,15 +237,33 @@ class SessionEvidencePackage:
         return self.package_dir
 
     def verify_package_integrity(self) -> tuple[bool, list[str]]:
-        """Validate all files in package directory against manifest checksums."""
+        """Validate all files in package directory against manifest checksums and detached digest."""
         manifest_path = self.package_dir / "manifest.json"
         if not manifest_path.exists():
             return False, ["Manifest file manifest.json does not exist"]
 
-        with open(manifest_path, encoding="utf-8") as f:
-            manifest_data = json.load(f)
-
         errors: list[str] = []
+
+        # 1. Verify manifest.json itself if detached manifest.sha256 exists
+        sha_file_path = self.package_dir / "manifest.sha256"
+        if sha_file_path.exists():
+            try:
+                expected_manifest_sha = sha_file_path.read_text(encoding="utf-8").strip().split()[0]
+                calc_manifest_sha = self._compute_sha256(manifest_path)
+                if calc_manifest_sha != expected_manifest_sha:
+                    errors.append(
+                        f"Checksum mismatch for manifest.json (expected {expected_manifest_sha[:8]}, got {calc_manifest_sha[:8]})"
+                    )
+            except Exception as exc:
+                errors.append(f"Failed to read manifest.sha256: {exc}")
+
+        # 2. Verify all files recorded in integrity_checksums
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest_data = json.load(f)
+        except Exception as exc:
+            return False, [f"Manifest file manifest.json is invalid JSON: {exc}"]
+
         checksums = manifest_data.get("integrity_checksums", {})
 
         for rel_path, expected_sha in checksums.items():

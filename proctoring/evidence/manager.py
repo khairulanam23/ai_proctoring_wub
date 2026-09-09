@@ -82,6 +82,7 @@ class EvidenceManager:
 
         self._ensure_directories()
         self._saved_frame_paths: dict[int, str] = {}  # frame_index -> relative path
+        self._evidence_id_to_path: dict[str, str] = {}
         self._evidence_counter = 0
 
     def _ensure_directories(self) -> None:
@@ -96,6 +97,28 @@ class EvidenceManager:
             while chunk := f.read(65536):
                 h.update(chunk)
         return h.hexdigest()
+
+    def get_evidence_path(self, evidence_id: str) -> Path | None:
+        """Find the absolute path on disk for a given evidence ID."""
+        if hasattr(self, "_evidence_id_to_path") and evidence_id in self._evidence_id_to_path:
+            p = self.package_dir / self._evidence_id_to_path[evidence_id]
+            if p.exists():
+                return p
+        if evidence_id.startswith("ev_frm_"):
+            try:
+                f_idx = int(evidence_id.split("_")[2])
+                if f_idx in self._saved_frame_paths:
+                    p = self.package_dir / self._saved_frame_paths[f_idx]
+                    if p.exists():
+                        return p
+            except Exception:
+                pass
+        for search_dir in [self.frames_dir, self.crops_dir, self.review_dir]:
+            if search_dir.exists():
+                for candidate in search_dir.glob(f"*{evidence_id}*"):
+                    if candidate.is_file():
+                        return candidate
+        return None
 
     def capture_frame(
         self,
@@ -113,8 +136,10 @@ class EvidenceManager:
             abs_path = self.package_dir / rel_path
             if abs_path.exists():
                 sha = self._compute_sha256(abs_path)
+                ev_id = f"ev_frm_{frame_index:06d}"
+                self._evidence_id_to_path[ev_id] = rel_path
                 return EvidenceReference(
-                    evidence_id=f"ev_frm_{frame_index:06d}",
+                    evidence_id=ev_id,
                     media_type="frame",
                     file_path=rel_path,
                     timestamp_seconds=timestamp_seconds,
@@ -143,10 +168,12 @@ class EvidenceManager:
             sha = self._compute_sha256(abs_path)
             size = abs_path.stat().st_size
             self._saved_frame_paths[frame_index] = rel_path
+            ev_id = f"ev_frm_{frame_index:06d}"
+            self._evidence_id_to_path[ev_id] = rel_path
             self._evidence_counter += 1
 
             return EvidenceReference(
-                evidence_id=f"ev_frm_{frame_index:06d}",
+                evidence_id=ev_id,
                 media_type="frame",
                 file_path=rel_path,
                 timestamp_seconds=timestamp_seconds,
@@ -211,9 +238,11 @@ class EvidenceManager:
             sha = self._compute_sha256(abs_path)
             size = abs_path.stat().st_size
             self._evidence_counter += 1
+            ev_id = f"ev_crp_{self._evidence_counter:04d}_{clean_label}"
+            self._evidence_id_to_path[ev_id] = rel_path
 
             return EvidenceReference(
-                evidence_id=f"ev_crp_{self._evidence_counter:04d}_{clean_label}",
+                evidence_id=ev_id,
                 media_type="crop",
                 file_path=rel_path,
                 timestamp_seconds=timestamp_seconds,
@@ -257,8 +286,10 @@ class EvidenceManager:
                 return None
 
             self._evidence_counter += 1
+            ev_id = f"ev_rev_{self._evidence_counter:04d}"
+            self._evidence_id_to_path[ev_id] = rel_path
             return EvidenceReference(
-                evidence_id=f"ev_rev_{self._evidence_counter:04d}",
+                evidence_id=ev_id,
                 media_type="review",
                 file_path=rel_path,
                 timestamp_seconds=timestamp_seconds,

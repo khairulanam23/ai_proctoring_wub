@@ -41,6 +41,7 @@ the single largest recall improvement available without changing models.
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 import numpy as np
@@ -48,6 +49,17 @@ import numpy as np
 from proctoring.core.events import EventType
 
 LOGGER = logging.getLogger(__name__)
+
+
+class WearableCategory(str, Enum):
+    """Refined classification of wearable / ear devices."""
+
+    NO_WEARABLE = "no_wearable"
+    OVER_EAR_HEADPHONES = "over_ear_headphone"
+    EARBUD_AIRPOD = "earbud_airpod"
+    OTHER_EAR_OBJECT = "other_ear_object"
+    UNCERTAIN = "uncertain"
+
 
 # Text prompts given to the open-vocabulary detector, and the event each maps to.
 # Several phrasings per target: open-vocabulary recall is sensitive to wording.
@@ -85,6 +97,8 @@ class WearableDetection:
     bbox: tuple[int, int, int, int]
     ear_anchored: bool = False  # confirmed to overlap an ear region
     reliability: str = "medium"  # "high" | "medium" | "low"
+    category: WearableCategory = WearableCategory.UNCERTAIN
+    category_reason: str = ""
 
     source: str = "frame"
     """``frame`` for the full-frame sweep, ``ear_zoom`` for the upscaled ear crop.
@@ -104,6 +118,8 @@ class WearableDetection:
             "bbox": list(self.bbox),
             "ear_anchored": self.ear_anchored,
             "reliability": self.reliability,
+            "category": self.category.value,
+            "category_reason": self.category_reason,
             "source": self.source,
             "hand_corroborated": self.hand_corroborated,
         }
@@ -117,6 +133,7 @@ class WearableAnalysisResult:
     """False when the detector was skipped this frame by the cadence scheduler."""
 
     detections: list[WearableDetection] = field(default_factory=list)
+    overall_category: WearableCategory = WearableCategory.NO_WEARABLE
     rejected_count: int = 0
     """Candidates discarded for sitting nowhere near an ear."""
 
@@ -133,6 +150,7 @@ class WearableAnalysisResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "ran": self.ran,
+            "overall_category": self.overall_category.value,
             "detections": [d.to_dict() for d in self.detections],
             "rejected_count": self.rejected_count,
             "ear_regions_scanned": self.ear_regions_scanned,
@@ -252,9 +270,103 @@ class WearableDetector:
                 detection.ear_anchored,
                 hand_corroborated=detection.hand_corroborated,
             )
+            cat, reason = self._classify_category(
+                detection=detection,
+                ear_regions=regions,
+                hand_corroborated=detection.hand_corroborated,
+            )
+            detection.category = cat
+            detection.category_reason = reason
 
         result.detections = detections
-        return self._deduplicate(result)
+        deduped = self._deduplicate(result)
+
+        cats = [d.category for d in deduped.detections]
+        if WearableCategory.OVER_EAR_HEADPHONES in cats:
+            deduped.overall_category = WearableCategory.OVER_EAR_HEADPHONES
+        elif WearableCategory.EARBUD_AIRPOD in cats:
+            deduped.overall_category = WearableCategory.EARBUD_AIRPOD
+        elif WearableCategory.OTHER_EAR_OBJECT in cats:
+            deduped.overall_category = WearableCategory.OTHER_EAR_OBJECT
+        elif WearableCategory.UNCERTAIN in cats:
+            deduped.overall_category = WearableCategory.UNCERTAIN
+        else:
+            deduped.overall_category = WearableCategory.NO_WEARABLE
+
+        return deduped
+
+    def _classify_category(
+        self,
+        detection: WearableDetection,
+        ear_regions: list[tuple[int, int, int, int]],
+        hand_corroborated: bool = False,
+    ) -> tuple[WearableCategory, str]:
+        """Refine detection into explicit categorical classification."""
+        target = detection.target
+        conf = detection.confidence
+        bx1, by1, bx2, by2 = detection.bbox
+
+        if target == "headphones":
+            if conf >= 0.35:
+                return WearableCategory.OVER_EAR_HEADPHONES, "Over-ear/on-ear headphone confirmed"
+            return WearableCategory.UNCERTAIN, "Low-confidence headphone candidate"
+
+        if target == "earbuds":
+            matched_region = None
+            for er in ear_regions:
+                ex1, ey1, ex2, ey2 = er
+                if not (bx2 < ex1 or bx1 > ex2 or by2 < ey1 or by1 > ey2):
+                    matched_region = er
+                    break
+
+            if matched_region is not None:
+                ex1, ey1, ex2, ey2 = matched_region
+                ear_h = max(1, ey2 - ey1)
+                ear_w = max(1, ex2 - ex1)
+                cy = (by1 + by2) / 2.0
+                rel_y = (cy - ey1) / float(ear_h)
+                box_h = by2 - by1
+                box_w = bx2 - bx1
+                rel_h = box_h / float(ear_h)
+                rel_w = box_w / float(ear_w)
+
+                # Lobule placement (bottom 25% of ear, small punctate size)
+                if rel_y > 0.75 and rel_h < 0.30 and rel_w < 0.35:
+                    return (
+                        WearableCategory.OTHER_EAR_OBJECT,
+                        "Lobule-positioned candidate consistent with earring or jewelry",
+                    )
+
+                # Superior helix / upper rim
+                if rel_y < 0.18 and rel_w > 0.60:
+                    return (
+                        WearableCategory.OTHER_EAR_OBJECT,
+                        "Superior helix candidate consistent with glasses temple or hair accessory",
+                    )
+
+                if (
+                    hand_corroborated
+                    or conf >= 0.45
+                    or "airpod" in detection.prompt
+                    or "wireless earbud" in detection.prompt
+                ):
+                    return (
+                        WearableCategory.EARBUD_AIRPOD,
+                        "Concha-positioned in-ear bud or AirPod profile",
+                    )
+                elif conf < 0.32:
+                    return (
+                        WearableCategory.UNCERTAIN,
+                        "Marginal earbud detection lacking distinct acoustic stem or concha confirmation",
+                    )
+                return (
+                    WearableCategory.EARBUD_AIRPOD,
+                    "Candidate earbud detected in ear region",
+                )
+
+            return WearableCategory.UNCERTAIN, "Candidate not anchored within calibrated ear region"
+
+        return WearableCategory.UNCERTAIN, f"Device target '{target}' outside audio category"
 
     def _scan_frame(
         self,

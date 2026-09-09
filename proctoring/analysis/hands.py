@@ -14,8 +14,9 @@ These are recorded as observations for a proctor with a snapshot attached, and t
 strictness policy decides which are worth surfacing at all.
 """
 
-import logging
 from dataclasses import dataclass, field
+from enum import Enum
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,44 @@ _MIDDLE_TIP = 12
 _FINGERTIPS = (4, 8, 12, 16, 20)
 
 
+class HandState(str, Enum):
+    """Categorical semantic state of candidate hands."""
+
+    HAND_RESTING = "hand_resting"
+    HAND_WRITING = "hand_writing"
+    HAND_MOVING_ACROSS_PAPER = "hand_moving_across_paper"
+    HAND_LIFTED_FROM_PAPER = "hand_lifted_from_paper"
+    HAND_NEAR_FACE = "hand_near_face"
+    HAND_NEAR_EAR = "hand_near_ear"
+    HAND_LEAVING_WRITING_AREA = "hand_leaving_writing_area"
+    PAPER_MANIPULATION = "paper_manipulation"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class HandKinematics:
+    """Temporal kinematics and trajectory features for a hand."""
+
+    velocity: tuple[float, float] = (0.0, 0.0)  # (vx, vy) in px/s
+    speed: float = 0.0  # px/s
+    acceleration: float = 0.0  # px/s^2
+    direction_deg: float = 0.0
+    trajectory_length: int = 0
+    writing_micro_oscillation: bool = False
+    state: HandState = HandState.UNKNOWN
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "velocity": [round(self.velocity[0], 1), round(self.velocity[1], 1)],
+            "speed": round(self.speed, 1),
+            "acceleration": round(self.acceleration, 1),
+            "direction_deg": round(self.direction_deg, 1),
+            "trajectory_length": self.trajectory_length,
+            "writing_micro_oscillation": self.writing_micro_oscillation,
+            "state": self.state.value,
+        }
+
+
 @dataclass
 class HandObservation:
     """One detected hand."""
@@ -40,6 +79,7 @@ class HandObservation:
     centroid: tuple[int, int]
     landmarks: np.ndarray | None = None  # (21, 2) pixel coordinates
     fingertip_points: list[tuple[int, int]] = field(default_factory=list)
+    kinematics: HandKinematics = field(default_factory=HandKinematics)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +87,7 @@ class HandObservation:
             "confidence": round(self.confidence, 4),
             "bbox": list(self.bbox),
             "centroid": list(self.centroid),
+            "kinematics": self.kinematics.to_dict(),
         }
 
 
@@ -68,6 +109,8 @@ class HandAnalysisResult:
     """True when hands are resting/active in writing area without obscuring face."""
     unusual_movement: bool = False
     """True when rapid hand movement dynamics are detected across consecutive frames."""
+    primary_hand_state: HandState = HandState.UNKNOWN
+    """High-level semantic categorization of hand behavior (writing, resting, etc.)."""
 
     nearest_hand_distance_ratio: float | None = None
     """Distance from the closest hand to the face centre, in face widths."""
@@ -82,6 +125,7 @@ class HandAnalysisResult:
         return {
             "hands_detected": self.hands_detected,
             "hands": [h.to_dict() for h in self.hands],
+            "primary_hand_state": self.primary_hand_state.value,
             "hand_near_face": self.hand_near_face,
             "hand_near_ear": self.hand_near_ear,
             "hand_near_mouth": self.hand_near_mouth,
@@ -139,6 +183,7 @@ class HandAnalyzer:
         self.writing_area_top_ratio = float(writing_area_top_ratio)
 
         self._last_centroids: list[tuple[int, int]] = []
+        self._kinematics_tracks: dict[str, list[dict[str, Any]]] = {}
         self._landmarker = None
         self._mp = None
         self.is_available = self._load()
@@ -178,6 +223,8 @@ class HandAnalyzer:
         face_bbox: tuple[int, int, int, int] | None = None,
         ear_regions: list[tuple[int, int, int, int]] | None = None,
         mouth_region: tuple[int, int, int, int] | None = None,
+        paper_bbox: tuple[int, int, int, int] | None = None,
+        timestamp_seconds: float | None = None,
     ) -> HandAnalysisResult:
         """Detect hands and, when face geometry is supplied, describe their position.
 
@@ -269,11 +316,137 @@ class HandAnalyzer:
         elif result.hand_in_writing_area:
             result.writing_posture_detected = True
 
+        # Temporal kinematics and behavioral state tracking
+        hand_states: list[HandState] = []
+        for hand in result.hands:
+            self._update_kinematics(
+                hand=hand,
+                result=result,
+                height=height,
+                width=width,
+                timestamp_seconds=timestamp_seconds,
+                paper_bbox=paper_bbox,
+            )
+            hand_states.append(hand.kinematics.state)
+
+        if hand_states:
+            priority = [
+                HandState.HAND_NEAR_EAR,
+                HandState.HAND_NEAR_FACE,
+                HandState.PAPER_MANIPULATION,
+                HandState.HAND_LEAVING_WRITING_AREA,
+                HandState.HAND_WRITING,
+                HandState.HAND_MOVING_ACROSS_PAPER,
+                HandState.HAND_RESTING,
+                HandState.HAND_LIFTED_FROM_PAPER,
+                HandState.UNKNOWN,
+            ]
+            for p in priority:
+                if p in hand_states:
+                    result.primary_hand_state = p
+                    break
+        else:
+            result.primary_hand_state = HandState.UNKNOWN
+
         return result
+
+    def _update_kinematics(
+        self,
+        hand: HandObservation,
+        result: HandAnalysisResult,
+        height: int,
+        width: int,
+        timestamp_seconds: float | None = None,
+        paper_bbox: tuple[int, int, int, int] | None = None,
+    ) -> None:
+        """Compute trajectory speed, acceleration, micro-oscillation and semantic state."""
+        import time
+
+        t_now = timestamp_seconds if timestamp_seconds is not None else time.time()
+        track_key = hand.handedness if hand.handedness in ("Left", "Right") else "Primary"
+        history = self._kinematics_tracks.setdefault(track_key, [])
+
+        cx, cy = hand.centroid
+        tip_pt = hand.fingertip_points[0] if hand.fingertip_points else (cx, cy)
+
+        history.append({
+            "timestamp": t_now,
+            "centroid": (cx, cy),
+            "tip": tip_pt,
+        })
+        if len(history) > 15:
+            history.pop(0)
+
+        vx, vy = 0.0, 0.0
+        speed = 0.0
+        accel = 0.0
+        direction_deg = 0.0
+        writing_micro_oscillation = False
+
+        if len(history) >= 2:
+            prev = history[-2]
+            dt = max(0.01, t_now - prev["timestamp"])
+            vx = (cx - prev["centroid"][0]) / dt
+            vy = (cy - prev["centroid"][1]) / dt
+            speed = float(np.hypot(vx, vy))
+            direction_deg = float(np.degrees(np.arctan2(vy, vx)))
+
+            if len(history) >= 3:
+                prev2 = history[-3]
+                dt_prev = max(0.01, prev["timestamp"] - prev2["timestamp"])
+                prev_speed = float(np.hypot(
+                    (prev["centroid"][0] - prev2["centroid"][0]) / dt_prev,
+                    (prev["centroid"][1] - prev2["centroid"][1]) / dt_prev,
+                ))
+                accel = (speed - prev_speed) / dt
+
+            # Analyze fingertip micro-movements for handwriting:
+            # Fingertip oscillating back-and-forth while wrist/palm speed is low
+            if len(history) >= 4 and speed < 40.0:
+                tip_dys = [history[i]["tip"][1] - history[i - 1]["tip"][1] for i in range(1, len(history))]
+                reversals = sum(1 for i in range(len(tip_dys) - 1) if tip_dys[i] * tip_dys[i + 1] < 0)
+                if reversals >= 2:
+                    writing_micro_oscillation = True
+
+        # Semantic classification
+        if result.hand_near_ear:
+            state = HandState.HAND_NEAR_EAR
+        elif result.hand_near_face:
+            state = HandState.HAND_NEAR_FACE
+        elif paper_bbox is not None and self._box_overlap(hand.bbox, paper_bbox) and speed > 100.0:
+            state = HandState.PAPER_MANIPULATION
+        elif hand.centroid[1] >= int(height * self.writing_area_top_ratio):
+            if writing_micro_oscillation or result.writing_posture_detected:
+                state = HandState.HAND_WRITING
+            elif speed < 12.0:
+                state = HandState.HAND_RESTING
+            else:
+                state = HandState.HAND_MOVING_ACROSS_PAPER
+        else:
+            if vy < -30.0:
+                state = HandState.HAND_LEAVING_WRITING_AREA
+            else:
+                state = HandState.UNKNOWN
+
+        hand.kinematics = HandKinematics(
+            velocity=(vx, vy),
+            speed=speed,
+            acceleration=accel,
+            direction_deg=direction_deg,
+            trajectory_length=len(history),
+            writing_micro_oscillation=writing_micro_oscillation,
+            state=state,
+        )
+
+    def _box_overlap(
+        self, box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]
+    ) -> bool:
+        return not (box_a[2] < box_b[0] or box_a[0] > box_b[2] or box_a[3] < box_b[1] or box_a[1] > box_b[3])
 
     def reset(self) -> None:
         """Reset temporal state between exam sessions."""
         self._last_centroids = []
+        self._kinematics_tracks.clear()
 
     def _relate_to_face(
         self,

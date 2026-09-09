@@ -22,7 +22,12 @@ class EventType(str, Enum):
 
     # Object detection events
     PHONE_DETECTED = "PHONE_DETECTED"
+    PHONE_CANDIDATE_UNCERTAIN = "PHONE_CANDIDATE_UNCERTAIN"
     PROHIBITED_OBJECT = "PROHIBITED_OBJECT"
+    PAPER_PRESENT = "PAPER_PRESENT"
+    PAPER_ABSENT = "PAPER_ABSENT"
+    PAPER_MANIPULATED = "PAPER_MANIPULATED"
+    MULTIPLE_PAPERS_DETECTED = "MULTIPLE_PAPERS_DETECTED"
 
     # Browser / Application monitoring events
     BROWSER_TAB_SWITCH = "BROWSER_TAB_SWITCH"
@@ -39,6 +44,10 @@ class EventType(str, Enum):
     HAND_NEAR_FACE = "HAND_NEAR_FACE"  # A hand entered the face region
     HAND_NEAR_EAR = "HAND_NEAR_EAR"  # Hand at the ear - consistent with an earpiece or a call
     HANDS_NOT_VISIBLE = "HANDS_NOT_VISIBLE"  # No hand visible while the candidate is present
+    HAND_WRITING = "HAND_WRITING"  # Hand actively engaged in writing dynamics on workspace
+    HAND_RESTING = "HAND_RESTING"  # Hand stationary in workspace
+    HAND_LIFTED_FROM_PAPER = "HAND_LIFTED_FROM_PAPER"  # Hand lifted vertically away from paper surface
+    HAND_LEAVING_WRITING_AREA = "HAND_LEAVING_WRITING_AREA"  # Hand departed designated writing workspace
 
     # Speech / vocalisation events
     CANDIDATE_SPEAKING = "CANDIDATE_SPEAKING"  # Sustained mouth articulation consistent with speech
@@ -248,6 +257,9 @@ class EventRecord:
     evidence: list[EvidenceReference] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     status: EventStatus = EventStatus.RECORDED
+    sequence_number: int = 0
+    engine_version: str = "1.0.0"
+    sync_status: str = "LOCAL_DURABLE"
     created_at_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def __post_init__(self) -> None:
@@ -288,6 +300,9 @@ class EventRecord:
             "evidence": [ev.to_dict() for ev in self.evidence],
             "metadata": self.metadata,
             "status": self.status.value,
+            "sequence_number": self.sequence_number,
+            "engine_version": self.engine_version,
+            "sync_status": self.sync_status,
             "created_at_utc": self.created_at_utc,
         }
 
@@ -353,6 +368,9 @@ class EventRecord:
             evidence=evidence_list,
             metadata=data.get("metadata", {}),
             status=EventStatus(data.get("status", EventStatus.RECORDED)),
+            sequence_number=int(data.get("sequence_number", 0)),
+            engine_version=str(data.get("engine_version", "1.0.0")),
+            sync_status=str(data.get("sync_status", "LOCAL_DURABLE")),
             created_at_utc=data.get("created_at_utc", ""),
         )
 

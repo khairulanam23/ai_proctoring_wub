@@ -26,7 +26,9 @@ requires_models = pytest.mark.skipif(not YUNET.exists(), reason="YuNet model not
 
 
 def _faces() -> list[np.ndarray]:
-    paths = sorted(glob.glob("data/samples/*/*_0001.jpg"))
+    paths = sorted(glob.glob("data/samples/Colin_Powell/*.jpg"))
+    if not paths:
+        paths = sorted(glob.glob("data/samples/*/*_0001.jpg"))
     return [cv2.resize(cv2.imread(p), (640, 480)) for p in paths[:8]]
 
 
