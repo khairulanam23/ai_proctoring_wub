@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,8 @@ import cv2
 import numpy as np
 
 from proctoring.detection.face_detector import FaceDetection, FaceDetector
+
+LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from proctoring.preprocessing.face_preprocessing import PreprocessingResult
@@ -111,12 +114,29 @@ class FaceVerifier:
         default_threshold: float | None = None,
         backend_id: int = cv2.dnn.DNN_BACKEND_OPENCV,
         target_id: int = cv2.dnn.DNN_TARGET_CPU,
+        device: str | None = None,
     ) -> None:
         self.recognizer_model_path = Path(recognizer_model_path)
         if not self.recognizer_model_path.exists():
             raise FileNotFoundError(f"SFace model file not found at: {self.recognizer_model_path}")
 
-        self.detector = detector if detector is not None else FaceDetector()
+        self.device = "cpu"
+        if device is not None and device.lower() in ("cuda", "cuda:0", "gpu"):
+            has_cuda = hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0
+            if has_cuda:
+                backend_id = getattr(cv2.dnn, "DNN_BACKEND_CUDA", backend_id)
+                target_id = getattr(cv2.dnn, "DNN_TARGET_CUDA", target_id)
+                self.device = "cuda"
+            else:
+                LOGGER.debug(
+                    "SFace FaceVerifier: OpenCV build lacks CUDA DNN support; running on CPU (MLAS SGEMM)."
+                )
+                self.device = "cpu"
+
+        self.backend_id = backend_id
+        self.target_id = target_id
+
+        self.detector = detector if detector is not None else FaceDetector(device=device)
         if preprocessor is not None:
             self.preprocessor = preprocessor
         else:
@@ -140,9 +160,14 @@ class FaceVerifier:
         self.recognizer = cv2.FaceRecognizerSF.create(
             model=str(self.recognizer_model_path),
             config="",
-            backend_id=backend_id,
-            target_id=target_id,
+            backend_id=self.backend_id,
+            target_id=self.target_id,
         )
+
+    @property
+    def is_gpu_accelerated(self) -> bool:
+        """Whether the face verifier is currently executing on a GPU device."""
+        return self.device.startswith("cuda")
 
     def extract_feature(
         self,

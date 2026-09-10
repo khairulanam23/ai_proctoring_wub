@@ -165,6 +165,7 @@ class HandAnalyzer:
         face_proximity_ratio: float = 1.0,
         ear_proximity_ratio: float = 0.55,
         writing_area_top_ratio: float = 0.45,
+        device: str | None = None,
     ) -> None:
         """
         Args:
@@ -176,6 +177,12 @@ class HandAnalyzer:
                 below which hands are considered in the desk/writing workspace.
         """
         self.model_path = Path(model_path)
+        self.device = "cpu"
+        if device is not None and device.lower() in ("cuda", "cuda:0", "gpu"):
+            LOGGER.debug(
+                "HandAnalyzer: MediaPipe Tasks on Linux operates on CPU via TensorFlow Lite XNNPACK delegate."
+            )
+
         self.max_hands = int(max_hands)
         self.min_detection_confidence = float(min_detection_confidence)
         self.face_proximity_ratio = float(face_proximity_ratio)
@@ -187,6 +194,11 @@ class HandAnalyzer:
         self._landmarker = None
         self._mp = None
         self.is_available = self._load()
+
+    @property
+    def is_gpu_accelerated(self) -> bool:
+        """Whether the analyzer is currently executing on a GPU device."""
+        return self.device.startswith("cuda")
 
     def _load(self) -> bool:
         """Load the hand landmarker, degrading to unavailable rather than raising."""

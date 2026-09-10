@@ -154,6 +154,28 @@ def create_app(service: ProctoringService | None = None) -> FastAPI:
     async def get_health() -> dict[str, Any]:
         """Health and readiness check returning model and session stats."""
         models_dir = Path("models")
+        cuda_available = False
+        cuda_device = None
+        try:
+            import torch
+
+            cuda_available = torch.cuda.is_available()
+            if cuda_available:
+                cuda_device = torch.cuda.get_device_name(0)
+        except Exception:
+            pass
+
+        hardware = {
+            "cuda_available": cuda_available,
+            "cuda_device": cuda_device,
+            "device_backends": {
+                "object_detector_yolo11": "cuda" if cuda_available else "cpu",
+                "face_detector_yunet": "cpu (OpenCV MLAS SGEMM)",
+                "face_verifier_sface": "cpu (OpenCV MLAS SGEMM)",
+                "mediapipe_landmarkers": "cpu (TFLite XNNPACK)",
+            },
+        }
+
         return HealthResponse(
             status="ok",
             engine_version="1.0.0",
@@ -165,35 +187,56 @@ def create_app(service: ProctoringService | None = None) -> FastAPI:
                 "object_detector_yolo11": (models_dir / "yolo11n.pt").exists(),
             },
             active_sessions_count=len(app.state.service._engines),
+            hardware=hardware,
         ).to_dict()
 
     @app.get("/api/v1/models", response_model=dict[str, Any])
     async def get_models_info() -> dict[str, Any]:
         """Retrieve authoritative model catalog, versions, and operating thresholds."""
+        cuda_available = False
+        try:
+            import torch
+
+            cuda_available = torch.cuda.is_available()
+        except Exception:
+            pass
+
         return {
             "engine_version": "1.0.0",
             "contract_version": CONTRACT_VERSION,
+            "hardware": {
+                "cuda_available": cuda_available,
+                "accelerated_stage": "object_detection (YOLO11)",
+            },
             "models": {
                 "face_detection": {
                     "name": "OpenCV YuNet",
                     "version": "2023mar",
                     "format": "ONNX",
+                    "backend": "OpenCV DNN (CPU MLAS SGEMM)",
+                    "device": "cpu",
                     "default_score_threshold": 0.60,
                 },
                 "face_verification": {
                     "name": "OpenCV SFace",
                     "version": "2021dec",
                     "format": "ONNX",
+                    "backend": "OpenCV DNN (CPU MLAS SGEMM)",
+                    "device": "cpu",
                     "default_cosine_threshold": 0.3630,
                 },
                 "object_detection": {
                     "name": "Ultralytics YOLO11",
                     "version": "11.0",
+                    "backend": "Ultralytics PyTorch (CUDA)" if cuda_available else "Ultralytics PyTorch (CPU)",
+                    "device": "cuda" if cuda_available else "cpu",
                     "default_confidence_threshold": 0.40,
                 },
                 "facial_and_hand_dynamics": {
                     "name": "MediaPipe Landmarkers",
                     "version": "tasks-1.0",
+                    "backend": "MediaPipe Tasks (CPU XNNPACK)",
+                    "device": "cpu",
                     "tasks": ["face_landmarker.task", "hand_landmarker.task"],
                 },
             },

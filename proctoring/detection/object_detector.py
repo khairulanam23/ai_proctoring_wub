@@ -110,7 +110,9 @@ class ObjectDetector:
     def _resolve_device(self, requested_device: str | None) -> str:
         """Resolve execution device (explicit override or auto-detect CUDA/CPU)."""
         if requested_device is not None:
-            return requested_device.lower()
+            clean = requested_device.strip().lower()
+            if clean != "auto":
+                return clean
 
         try:
             import torch
@@ -121,6 +123,21 @@ class ObjectDetector:
             pass
 
         return "cpu"
+
+    @property
+    def is_gpu_accelerated(self) -> bool:
+        """Whether the detector is currently executing on a GPU device."""
+        return self.device.startswith("cuda")
+
+    @property
+    def backend_info(self) -> dict[str, Any]:
+        """Diagnostic backend and device placement information."""
+        return {
+            "model_name": self.model_name,
+            "device": self.device,
+            "is_gpu_accelerated": self.is_gpu_accelerated,
+            "framework": "Ultralytics YOLO (PyTorch)",
+        }
 
     def load_model(self) -> None:
         """Load the YOLO model from specified path or model identifier."""
@@ -134,6 +151,37 @@ class ObjectDetector:
 
         target = str(self.model_path) if self.model_path is not None else self.model_name
         self.model = YOLO(target)
+
+        # Ensure model weights reside on target device and warm up CUDA kernels
+        if self.device != "cpu":
+            try:
+                if hasattr(self.model, "to"):
+                    self.model.to(self.device)
+                # Warmup pass to initialize CUDA context and prevent cold-start latency spike
+                dummy_input = np.zeros((64, 64, 3), dtype=np.uint8)
+                self.model(dummy_input, device=self.device, verbose=False)
+                try:
+                    import torch
+
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                except Exception:
+                    pass
+                LOGGER.info(
+                    "Successfully loaded and warmed up YOLO model on target device '%s'", self.device
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "Failed to move/warmup YOLO model on device '%s' (%s). Safely falling back to CPU.",
+                    self.device,
+                    exc,
+                )
+                self.device = "cpu"
+                if hasattr(self.model, "to"):
+                    try:
+                        self.model.to("cpu")
+                    except Exception:
+                        pass
 
     def detect(
         self,

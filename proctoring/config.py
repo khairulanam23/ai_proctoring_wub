@@ -100,6 +100,14 @@ class SessionConfig:
     # ------------------------------------------------------------------
     # Stage 6 — Scene / behavioural observation (object detection)
     # ------------------------------------------------------------------
+    device: str = "auto"
+    """Target execution device preference ('auto', 'cuda', 'cpu').
+    In 'auto' mode:
+    - YOLO11 uses CUDA if available, falling back to CPU safely.
+    - YuNet & SFace run on CPU (OpenCV DNN MLAS SGEMM engine).
+    - MediaPipe landmarker pipelines run on CPU (Google TFLite XNNPACK).
+    """
+
     enable_object_detection: bool = True
     object_confidence_threshold: float = 0.25
 
@@ -196,6 +204,7 @@ class SessionConfig:
         self.active_fps = max(self.idle_fps, float(self.active_fps))
         self.output_dir = Path(self.output_dir)
         self.strictness = StrictnessLevel(self.strictness)
+        self.device = str(self.device).lower().strip()
 
         # Identifiers reach the filesystem, so they are sanitised before anything
         # builds a path from them.

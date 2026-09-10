@@ -90,20 +90,26 @@ class StageCoordinator:
                 blink_threshold=self.policy.blink_threshold,
                 liveness_grace_seconds=self.policy.liveness_grace_seconds,
                 ear_region_padding_ratio=self.policy.ear_region_padding_ratio,
+                device=self.config.device,
             )
 
         self.hand_analyzer = hand_analyzer
         if self.hand_analyzer is None and self.config.enable_hand_analysis:
-            self.hand_analyzer = HandAnalyzer(model_path=self.config.hand_model)
+            self.hand_analyzer = HandAnalyzer(
+                model_path=self.config.hand_model,
+                device=self.config.device,
+            )
 
         self.wearable_detector = wearable_detector
         if self.wearable_detector is None and self.config.enable_wearable_detection:
+            wearable_device = None if self.config.device == "auto" else self.config.device
             self.wearable_detector = WearableDetector(
                 model_name=self.config.wearable_model,
                 confidence_threshold=self.policy.headphone_confidence_threshold,
                 earbud_confidence_threshold=self.policy.earbud_confidence_threshold,
                 enable_ear_region_zoom=self.policy.enable_ear_region_zoom,
                 ear_roi_target_px=self.policy.ear_roi_target_px,
+                device=wearable_device,
             )
 
         self.occlusion_classifier = FaceOcclusionClassifier()

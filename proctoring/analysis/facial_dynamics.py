@@ -197,6 +197,7 @@ class FacialDynamicsAnalyzer:
         liveness_grace_seconds: float = 45.0,
         ear_region_padding_ratio: float = _DEFAULT_EAR_PADDING_RATIO,
         max_faces: int = 2,
+        device: str | None = None,
     ) -> None:
         """
         Args:
@@ -231,6 +232,12 @@ class FacialDynamicsAnalyzer:
                 spoofing is serious.
         """
         self.model_path = Path(model_path)
+        self.device = "cpu"
+        if device is not None and device.lower() in ("cuda", "cuda:0", "gpu"):
+            LOGGER.debug(
+                "FacialDynamicsAnalyzer: MediaPipe Tasks on Linux operates on CPU via TensorFlow Lite XNNPACK delegate."
+            )
+
         self.speech_window_frames = max(4, int(speech_window_frames))
         self.speech_articulation_amplitude = float(speech_articulation_amplitude)
         self.speech_min_crossings = int(speech_min_crossings)
@@ -294,6 +301,11 @@ class FacialDynamicsAnalyzer:
         except Exception as exc:
             LOGGER.info("Face landmarker unavailable: %s", exc)
             return False
+
+    @property
+    def is_gpu_accelerated(self) -> bool:
+        """Whether the analyzer is currently executing on a GPU device."""
+        return self.device.startswith("cuda")
 
     def close(self) -> None:
         """Release the underlying landmarker."""

@@ -1,10 +1,13 @@
 """Face detection module using OpenCV YuNet."""
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -39,6 +42,7 @@ class FaceDetector:
         top_k: int = 5000,
         backend_id: int = cv2.dnn.DNN_BACKEND_OPENCV,
         target_id: int = cv2.dnn.DNN_TARGET_CPU,
+        device: str | None = None,
     ) -> None:
         self.model_path = Path(model_path)
         if not self.model_path.exists():
@@ -47,6 +51,21 @@ class FaceDetector:
         self.score_threshold = score_threshold
         self.nms_threshold = nms_threshold
         self.top_k = top_k
+        self.device = "cpu"
+
+        # Explicit device resolution with safe capability detection
+        if device is not None and device.lower() in ("cuda", "cuda:0", "gpu"):
+            has_cuda = hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0
+            if has_cuda:
+                backend_id = getattr(cv2.dnn, "DNN_BACKEND_CUDA", backend_id)
+                target_id = getattr(cv2.dnn, "DNN_TARGET_CUDA", target_id)
+                self.device = "cuda"
+            else:
+                LOGGER.debug(
+                    "YuNet FaceDetector: OpenCV build lacks CUDA DNN support; running on CPU (MLAS SGEMM)."
+                )
+                self.device = "cpu"
+
         self.backend_id = backend_id
         self.target_id = target_id
 
@@ -61,6 +80,11 @@ class FaceDetector:
             backend_id=self.backend_id,
             target_id=self.target_id,
         )
+
+    @property
+    def is_gpu_accelerated(self) -> bool:
+        """Whether the face detector is currently executing on a GPU device."""
+        return self.device.startswith("cuda")
 
     def detect(
         self,

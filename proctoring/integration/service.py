@@ -583,9 +583,9 @@ class ProctoringService:
             ]
             model_path = next((p for p in model_candidates if p.exists()), None)
             if model_path is not None:
-                bundle["object_detector"] = ObjectDetector(model_path=model_path)
+                bundle["object_detector"] = ObjectDetector(model_path=model_path, device="auto")
             else:
-                bundle["object_detector"] = ObjectDetector(model_name="yolo11n.pt")
+                bundle["object_detector"] = ObjectDetector(model_name="yolo11n.pt", device="auto")
         except Exception as exc:
             LOGGER.warning("Could not initialize default YOLO11 ObjectDetector: %s", exc)
 

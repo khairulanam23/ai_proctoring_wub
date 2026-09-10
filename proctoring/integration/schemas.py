@@ -379,16 +379,20 @@ class HealthResponse:
     engine_version: str
     models_loaded: dict[str, bool]
     active_sessions_count: int
+    hardware: dict[str, Any] = field(default_factory=dict)
     timestamp_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "status": self.status,
             "engine_version": self.engine_version,
             "models_loaded": self.models_loaded,
             "active_sessions_count": self.active_sessions_count,
             "timestamp_utc": self.timestamp_utc,
         }
+        if self.hardware:
+            result["hardware"] = self.hardware
+        return result
 
 
 # Caveats attached to observations whose underlying signal is weak. Surfaced in the
