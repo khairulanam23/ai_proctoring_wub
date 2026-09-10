@@ -245,6 +245,7 @@ class ProctoringService:
         Accepts a base64 data URL (what a browser canvas produces), raw encoded
         bytes, or an already-decoded BGR array.
         """
+        session_id = self._resolve_session_id(session_id)
         engine = self._require_engine(session_id)
         decoded = self._decode_frame(frame)
 
@@ -374,6 +375,24 @@ class ProctoringService:
 
     def finalize_session(self, session_id: str) -> SessionResult:
         """Close the attempt, seal the evidence package and release the engine."""
+        session_id = self._resolve_session_id(session_id)
+        existing_record = self.store.get(session_id)
+        if existing_record is None:
+            for sid in self.store.list():
+                rec = self.store.get(sid)
+                if rec and getattr(rec, "attempt_id", None) == session_id:
+                    existing_record = rec
+                    session_id = sid
+                    break
+
+        if existing_record and existing_record.state == SessionState.COMPLETED and existing_record.result:
+            LOGGER.info("Session %s is already finalized; returning existing result idempotently.", session_id)
+            fields = set(SessionResult.__dataclass_fields__)
+            data = {k: v for k, v in existing_record.result.items() if k in fields}
+            if "state" in data and isinstance(data["state"], str):
+                data["state"] = SessionState(data["state"])
+            return SessionResult(**data)
+
         engine = self._require_engine(session_id)
         record = self._require_record(session_id)
 
@@ -655,6 +674,19 @@ class ProctoringService:
         """Number of sessions currently holding an engine in memory."""
         with self._lock:
             return len(self._engines)
+
+    def _resolve_session_id(self, session_id: str) -> str:
+        with self._lock:
+            if session_id in self._engines:
+                return session_id
+            rec = self.store.get(session_id)
+            if rec:
+                return rec.session_id
+            for sid in self._engines:
+                r = self.store.get(sid)
+                if r and getattr(r, "attempt_id", None) == session_id:
+                    return sid
+        return session_id
 
     def _require_record(self, session_id: str) -> SessionRecord:
         """Fetch a session record or fail with a clear error.

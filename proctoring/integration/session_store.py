@@ -131,6 +131,9 @@ class SessionStore:
             record = self._records.get(session_id)
             if record is not None:
                 return record
+            for rec in self._records.values():
+                if rec.attempt_id == session_id:
+                    return rec
             path = self._safe_path(self.sessions_dir, session_id, ".json")
             if path.exists():
                 try:
