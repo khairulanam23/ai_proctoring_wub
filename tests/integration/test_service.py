@@ -309,3 +309,21 @@ def test_default_detectors_include_yolo11_object_detector(tmp_path):
     assert "object_detection" in handle.active_detectors, "object_detection must be active in session"
     assert "object_detection" not in handle.unavailable_detectors, "object_detection must not be reported as unavailable"
 
+
+def test_start_session_activates_face_verification_when_enrolment_present(tmp_path):
+    """Verify that when a candidate has enrolled reference templates, start_session activates face verification."""
+    store = SessionStore(tmp_path / "store")
+    service = ProctoringService(output_dir=tmp_path / "pkg", store=store)
+
+    # Save enrollment templates for candidate
+    dummy_templates = [np.ones((1, 128), dtype=np.float32)]
+    store.save_enrolment("candidate_42", dummy_templates)
+
+    handle = service.start_session(
+        StartSessionRequest(attempt_id="att_verify_1", user_id="candidate_42", enrolment_id="candidate_42")
+    )
+    assert handle.identity_verification_enabled is True
+    assert "identity_verification" in handle.active_detectors
+    assert "identity_verification" not in handle.unavailable_detectors
+
+

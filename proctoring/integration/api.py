@@ -42,15 +42,16 @@ LOGGER = logging.getLogger(__name__)
 class StartSessionPayload(BaseModel):
     session_id: str | None = None
     attempt_id: str | None = None
-    exam_id: str | None = "default_exam"
+    exam_id: str | None = None
     quiz_id: str | None = None
-    candidate_id: str | None = "default_candidate"
+    candidate_id: str | None = None
     user_id: str | None = None
     candidate_name: str = "Candidate"
     organization_id: str | None = None
     strictness: str = "STANDARD"
     sampling_fps: float = 4.0
     enable_wearable_detection: bool = False
+    enrolment_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -217,6 +218,7 @@ def create_app(service: ProctoringService | None = None) -> FastAPI:
             strictness=payload.strictness,
             sampling_fps=payload.sampling_fps,
             enable_wearable_detection=payload.enable_wearable_detection,
+            enrolment_id=payload.enrolment_id or payload.candidate_id or payload.user_id or payload.candidate_name,
             metadata=payload.metadata,
         )
         try:
@@ -224,6 +226,24 @@ def create_app(service: ProctoringService | None = None) -> FastAPI:
             return handle.to_dict()
         except Exception as exc:
             LOGGER.error("Failed to start session: %s", exc)
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/v1/enrolment/{enrolment_id}", response_model=dict[str, Any], status_code=status.HTTP_201_CREATED)
+    @app.post("/api/v1/candidate/enrol", response_model=dict[str, Any], status_code=status.HTTP_201_CREATED)
+    async def enrol_candidate(
+        payload: CandidateEnrollPayload,
+        enrolment_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Enroll candidate reference images and build identity verification templates."""
+        target_id = enrolment_id or payload.candidate_id or payload.candidate_name
+        try:
+            result = app.state.service.enrol_candidate(
+                enrolment_id=target_id,
+                frames=payload.images,
+            )
+            return result
+        except Exception as exc:
+            LOGGER.error("Failed to enrol candidate: %s", exc)
             raise HTTPException(status_code=400, detail=str(exc))
 
     @app.post("/api/v1/session/{session_id}/pause", response_model=dict[str, Any])

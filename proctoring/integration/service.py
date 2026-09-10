@@ -140,11 +140,57 @@ class ProctoringService:
         engine = ProctoringEngine(config=config, **detectors)
 
         # Restore a stored enrolment so identity verification has a template.
-        if request.enrolment_id:
-            templates = self.store.load_enrolment(request.enrolment_id)
-            if templates:
-                config.reference_templates = templates
-                config.enable_face_verification = True
+        templates: list[np.ndarray] = []
+        candidate_keys = [
+            request.enrolment_id,
+            request.candidate_id,
+            request.user_id,
+            request.candidate_name,
+        ]
+        if request.candidate_id:
+            candidate_keys.append(f"user_{request.candidate_id}")
+        if request.user_id:
+            candidate_keys.append(f"user_{request.user_id}")
+
+        for key in candidate_keys:
+            if key:
+                templates = self.store.load_enrolment(str(key))
+                if templates:
+                    LOGGER.info(
+                        "Loaded %d reference template(s) for session %s using key '%s'",
+                        len(templates),
+                        session_id,
+                        key,
+                    )
+                    break
+
+        if not templates and (request.candidate_name or request.candidate_id):
+            # Check if any existing enrollment directory matches candidate_name or candidate_id tokens
+            name_tokens = set(
+                str(request.candidate_name or "").lower().replace("-", " ").replace("_", " ").split()
+            )
+            if hasattr(self.store, "storage") and hasattr(self.store.storage, "students_root"):
+                students_dir = self.store.storage.students_root
+                if students_dir.exists():
+                    for s_dir in students_dir.iterdir():
+                        if s_dir.is_dir() and (s_dir / "enrollment" / "manifest.json").exists():
+                            dir_tokens = set(
+                                s_dir.name.lower().replace("-", " ").replace("_", " ").split()
+                            )
+                            if dir_tokens and dir_tokens.issubset(name_tokens):
+                                templates = self.store.load_enrolment(s_dir.name)
+                                if templates:
+                                    LOGGER.info(
+                                        "Resolved %d reference template(s) for session %s from student directory '%s'",
+                                        len(templates),
+                                        session_id,
+                                        s_dir.name,
+                                    )
+                                    break
+
+        if templates:
+            config.reference_templates = templates
+            config.enable_face_verification = True
 
         engine.start_session()
 
@@ -177,6 +223,9 @@ class ProctoringService:
             session_id=session_id,
             attempt_id=request.attempt_id,
             user_id=request.user_id,
+            exam_id=request.exam_id,
+            candidate_id=request.candidate_id,
+            organization_id=request.organization_id,
             state=SessionState.ACTIVE,
             strictness=config.strictness.value,
             active_detectors=active,

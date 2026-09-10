@@ -73,13 +73,23 @@ class SessionStore:
     methods to back this with a real database.
     """
 
-    def __init__(self, storage_dir: str | Path = "data/proctoring_sessions") -> None:
+    def __init__(
+        self,
+        storage_dir: str | Path = "data/proctoring_sessions",
+        enrolment_storage_dir: str | Path | None = None,
+    ) -> None:
         self.storage_dir = Path(storage_dir)
         self.sessions_dir = self.storage_dir / "sessions"
         # Enrolment is delegated rather than duplicated: ProctoringStorage owns the
         # single identity store, so reference images and the embeddings derived from
         # them live together and are erased together.
-        self.storage = ProctoringStorage(self.storage_dir)
+        if enrolment_storage_dir is not None:
+            enrol_dir = Path(enrolment_storage_dir)
+        elif self.storage_dir == Path("data/proctoring_sessions") and (Path("data") / "students").exists():
+            enrol_dir = Path("data")
+        else:
+            enrol_dir = self.storage_dir
+        self.storage = ProctoringStorage(enrol_dir)
         self.enrolment_dir = self.storage.students_root
         self._records: dict[str, SessionRecord] = {}
         self._lock = threading.RLock()
@@ -182,7 +192,13 @@ class SessionStore:
 
     def load_enrolment(self, enrolment_id: str) -> builtins.list[np.ndarray]:
         """Load a candidate's reference embeddings, or an empty list if unusable."""
-        return self.storage.load_templates(enrolment_id)
+        templates = self.storage.load_templates(enrolment_id)
+        if not templates and (Path("data") / "students").exists():
+            try:
+                templates = ProctoringStorage(Path("data")).load_templates(enrolment_id)
+            except Exception:
+                pass
+        return templates
 
     def delete_enrolment(self, enrolment_id: str) -> bool:
         """Erase a candidate's stored reference images and embeddings.
