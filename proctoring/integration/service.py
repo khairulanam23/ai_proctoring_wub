@@ -516,6 +516,7 @@ class ProctoringService:
 
         from proctoring.detection.face_detector import FaceDetector
         from proctoring.detection.face_verifier import FaceVerifier
+        from proctoring.detection.object_detector import ObjectDetector
 
         bundle: dict[str, Any] = {}
         try:
@@ -525,6 +526,19 @@ class ProctoringService:
                 bundle["face_verifier"] = FaceVerifier(detector=detector)
         except Exception:
             pass
+
+        try:
+            model_candidates = [
+                Path("models/yolo11n.pt"),
+                Path(__file__).resolve().parent.parent.parent / "models" / "yolo11n.pt",
+            ]
+            model_path = next((p for p in model_candidates if p.exists()), None)
+            if model_path is not None:
+                bundle["object_detector"] = ObjectDetector(model_path=model_path)
+            else:
+                bundle["object_detector"] = ObjectDetector(model_name="yolo11n.pt")
+        except Exception as exc:
+            LOGGER.warning("Could not initialize default YOLO11 ObjectDetector: %s", exc)
 
         self._detector_cache = bundle
         return bundle

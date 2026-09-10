@@ -161,6 +161,7 @@ def create_app(service: ProctoringService | None = None) -> FastAPI:
                 "face_verifier_sface": (models_dir / "face_recognition_sface_2021dec.onnx").exists(),
                 "face_landmarker": (models_dir / "face_landmarker.task").exists(),
                 "hand_landmarker": (models_dir / "hand_landmarker.task").exists(),
+                "object_detector_yolo11": (models_dir / "yolo11n.pt").exists(),
             },
             active_sessions_count=len(app.state.service._engines),
         ).to_dict()

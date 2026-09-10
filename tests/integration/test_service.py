@@ -293,3 +293,19 @@ def test_start_request_round_trips_through_json():
     )
     restored = StartSessionRequest.from_dict(json.loads(json.dumps(request.to_dict())))
     assert restored == request
+
+
+def test_default_detectors_include_yolo11_object_detector(tmp_path):
+    """Verify that production default detectors instantiate YOLO11 and activate object_detection."""
+    from proctoring.detection.object_detector import ObjectDetector
+
+    service = ProctoringService(output_dir=tmp_path / "pkg", store=SessionStore(tmp_path / "store"))
+    bundle = service._default_detectors()
+
+    assert "object_detector" in bundle, "object_detector must be present in default detector bundle"
+    assert isinstance(bundle["object_detector"], ObjectDetector), "object_detector must be an ObjectDetector instance"
+
+    handle = service.start_session(StartSessionRequest(attempt_id="yolo_verify_1", user_id="user_1"))
+    assert "object_detection" in handle.active_detectors, "object_detection must be active in session"
+    assert "object_detection" not in handle.unavailable_detectors, "object_detection must not be reported as unavailable"
+
