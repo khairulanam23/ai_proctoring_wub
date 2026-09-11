@@ -195,13 +195,25 @@ class SessionStore:
 
     def load_enrolment(self, enrolment_id: str) -> builtins.list[np.ndarray]:
         """Load a candidate's reference embeddings, or an empty list if unusable."""
-        templates = self.storage.load_templates(enrolment_id)
-        if not templates and (Path("data") / "students").exists():
-            try:
-                templates = ProctoringStorage(Path("data")).load_templates(enrolment_id)
-            except Exception:
-                pass
-        return templates
+        keys_to_try = [enrolment_id]
+        if isinstance(enrolment_id, str):
+            clean = enrolment_id.strip()
+            hyphenated = clean.replace(" ", "-").replace("_", "-")
+            underscored = clean.replace(" ", "_").replace("-", "_")
+            for k in (hyphenated, underscored, clean.lower(), hyphenated.lower()):
+                if k and k not in keys_to_try:
+                    keys_to_try.append(k)
+
+        for key in keys_to_try:
+            templates = self.storage.load_templates(key)
+            if not templates and (Path("data") / "students").exists():
+                try:
+                    templates = ProctoringStorage(Path("data")).load_templates(key)
+                except Exception:
+                    pass
+            if templates:
+                return templates
+        return []
 
     def delete_enrolment(self, enrolment_id: str) -> bool:
         """Erase a candidate's stored reference images and embeddings.

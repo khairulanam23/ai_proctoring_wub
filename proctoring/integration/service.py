@@ -173,7 +173,10 @@ class ProctoringService:
                 students_dir = self.store.storage.students_root
                 if students_dir.exists():
                     for s_dir in students_dir.iterdir():
-                        if s_dir.is_dir() and (s_dir / "enrollment" / "manifest.json").exists():
+                        if s_dir.is_dir() and (
+                            (s_dir / "enrollment" / "enrollment.json").exists()
+                            or (s_dir / "enrollment" / "templates.npz").exists()
+                        ):
                             dir_tokens = set(
                                 s_dir.name.lower().replace("-", " ").replace("_", " ").split()
                             )
@@ -191,6 +194,16 @@ class ProctoringService:
         if templates:
             config.reference_templates = templates
             config.enable_face_verification = True
+        else:
+            config.reference_templates = []
+            config.enable_face_verification = False
+            LOGGER.warning(
+                "No face enrollment reference templates found for candidate '%s' (id=%s, enrolment_id=%s) in session %s. Identity verification disabled.",
+                request.candidate_name,
+                request.candidate_id,
+                request.enrolment_id,
+                session_id,
+            )
 
         engine.start_session()
 
