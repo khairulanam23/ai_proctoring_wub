@@ -152,28 +152,35 @@ def create_app(service: ProctoringService | None = None) -> FastAPI:
     @app.get("/health", response_model=dict[str, Any])
     @app.get("/api/v1/health", response_model=dict[str, Any])
     async def get_health() -> dict[str, Any]:
-        """Health and readiness check returning model and session stats."""
+        """Health and readiness check returning model, hardware, and session stats."""
         models_dir = Path("models")
-        cuda_available = False
-        cuda_device = None
-        try:
-            import torch
+        from proctoring.telemetry.gpu_diagnostics import get_gpu_diagnostics
 
-            cuda_available = torch.cuda.is_available()
-            if cuda_available:
-                cuda_device = torch.cuda.get_device_name(0)
+        ort_cuda = False
+        try:
+            from proctoring.detection.backends.onnx_backend import check_cuda_provider_available
+            ort_cuda = check_cuda_provider_available()
         except Exception:
             pass
 
+        engine = next(iter(app.state.service._engines.values())) if app.state.service._engines else None
+        gpu_diag = get_gpu_diagnostics(engine=engine).to_dict()
+
         hardware = {
-            "cuda_available": cuda_available,
-            "cuda_device": cuda_device,
+            "cuda_available": gpu_diag.get("cuda_available", False),
+            "cuda_device": gpu_diag.get("device_name"),
+            "cuda_version": gpu_diag.get("cuda_version"),
+            "compute_capability": gpu_diag.get("compute_capability"),
+            "vram_total_mb": gpu_diag.get("vram_total_mb", 0.0),
+            "vram_free_mb": gpu_diag.get("vram_free_mb", 0.0),
+            "vram_allocated_mb": gpu_diag.get("vram_allocated_mb", 0.0),
             "device_backends": {
-                "object_detector_yolo11": "cuda" if cuda_available else "cpu",
-                "face_detector_yunet": "cpu (OpenCV MLAS SGEMM)",
-                "face_verifier_sface": "cpu (OpenCV MLAS SGEMM)",
+                "object_detector_yolo11": "cuda" if gpu_diag.get("cuda_available") else "cpu",
+                "face_detector_yunet": "onnxruntime_cuda" if ort_cuda else "cpu (OpenCV MLAS SGEMM)",
+                "face_verifier_sface": "onnxruntime_cuda" if ort_cuda else "cpu (OpenCV MLAS SGEMM)",
                 "mediapipe_landmarkers": "cpu (TFLite XNNPACK)",
             },
+            "models_placement": gpu_diag.get("models", []),
         }
 
         return HealthResponse(
@@ -193,36 +200,45 @@ def create_app(service: ProctoringService | None = None) -> FastAPI:
     @app.get("/api/v1/models", response_model=dict[str, Any])
     async def get_models_info() -> dict[str, Any]:
         """Retrieve authoritative model catalog, versions, and operating thresholds."""
-        cuda_available = False
-        try:
-            import torch
+        from proctoring.telemetry.gpu_diagnostics import get_gpu_diagnostics
 
-            cuda_available = torch.cuda.is_available()
+        ort_cuda = False
+        try:
+            from proctoring.detection.backends.onnx_backend import check_cuda_provider_available
+            ort_cuda = check_cuda_provider_available()
         except Exception:
             pass
+
+        gpu_diag = get_gpu_diagnostics().to_dict()
+        cuda_available = gpu_diag.get("cuda_available", False)
 
         return {
             "engine_version": "1.0.0",
             "contract_version": CONTRACT_VERSION,
             "hardware": {
                 "cuda_available": cuda_available,
-                "accelerated_stage": "object_detection (YOLO11)",
+                "cuda_device": gpu_diag.get("device_name"),
+                "accelerated_stage": (
+                    "yolo11 (PyTorch CUDA) + yunet/sface (ONNXRuntime CUDA)"
+                    if (ort_cuda and cuda_available)
+                    else ("yolo11 (PyTorch CUDA)" if cuda_available else "cpu")
+                ),
             },
             "models": {
                 "face_detection": {
                     "name": "OpenCV YuNet",
                     "version": "2023mar",
                     "format": "ONNX",
-                    "backend": "OpenCV DNN (CPU MLAS SGEMM)",
-                    "device": "cpu",
+                    "backend": "ONNXRuntime (CUDAExecutionProvider)" if ort_cuda else "OpenCV DNN (CPU MLAS SGEMM)",
+                    "device": "cuda" if ort_cuda else "cpu",
                     "default_score_threshold": 0.60,
                 },
                 "face_verification": {
                     "name": "OpenCV SFace",
                     "version": "2021dec",
                     "format": "ONNX",
-                    "backend": "OpenCV DNN (CPU MLAS SGEMM)",
-                    "device": "cpu",
+                    "backend": "ONNXRuntime (CUDAExecutionProvider)" if ort_cuda else "OpenCV DNN (CPU MLAS SGEMM)",
+                    "device": "cuda" if ort_cuda else "cpu",
                     "default_cosine_threshold": 0.3630,
                 },
                 "object_detection": {

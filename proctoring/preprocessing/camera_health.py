@@ -111,22 +111,23 @@ class CameraHealthMonitor:
         h, w = frame.shape[:2]
         current_res = (w, h)
 
-        # 2. Check for unexpected mid-session resolution renegotiation
-        if self._initial_resolution is None:
-            self._initial_resolution = current_res
-        elif self._initial_resolution != current_res:
-            res_change_details = {
-                "initial_resolution": list(self._initial_resolution),
-                "current_resolution": list(current_res),
-            }
-            # Update baseline resolution to avoid continuous failure
-            self._initial_resolution = current_res
-            return CameraHealthStatus(
-                anomaly=CameraAnomaly.RESOLUTION_CHANGED,
-                is_healthy=False,
-                resolution=current_res,
-                details=res_change_details,
-            )
+        # 2. Check for unexpected mid-session resolution renegotiation (for operational resolutions)
+        if w >= 160 and h >= 120:
+            if self._initial_resolution is None:
+                self._initial_resolution = current_res
+            elif self._initial_resolution != current_res:
+                res_change_details = {
+                    "initial_resolution": list(self._initial_resolution),
+                    "current_resolution": list(current_res),
+                }
+                # Update baseline resolution to avoid continuous failure
+                self._initial_resolution = current_res
+                return CameraHealthStatus(
+                    anomaly=CameraAnomaly.RESOLUTION_CHANGED,
+                    is_healthy=False,
+                    resolution=current_res,
+                    details=res_change_details,
+                )
 
         # 3. Check for delivery interruption / gap in timestamp
         gap_sec = 0.0
@@ -135,6 +136,17 @@ class CameraHealthMonitor:
             gap_sec = timestamp_seconds - self._last_timestamp
             if gap_sec > self.max_delivery_gap_seconds:
                 self._last_timestamp = timestamp_seconds
+                self._freeze_start_timestamp = None
+                # Update thumbnail so post-gap frame is compared with gap frame, not pre-gap frame
+                if len(frame.shape) == 3 and frame.shape[2] in (3, 4):
+                    gray_gap = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                elif len(frame.shape) == 2:
+                    gray_gap = frame
+                else:
+                    gray_gap = None
+                if gray_gap is not None:
+                    self._last_thumbnail = cv2.resize(gray_gap, (64, 48), interpolation=cv2.INTER_AREA)
+
                 return CameraHealthStatus(
                     anomaly=CameraAnomaly.DELIVERY_GAP,
                     is_healthy=False,

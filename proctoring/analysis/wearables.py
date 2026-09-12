@@ -205,9 +205,21 @@ class WearableDetector:
     def load_model(self) -> bool:
         """Load YOLO-World and bind the text prompts, degrading gracefully on failure."""
         try:
+            from pathlib import Path
             from ultralytics import YOLOWorld
 
-            self.model = YOLOWorld(self.model_name)
+            model_target = self.model_name
+            candidates = [
+                Path(self.model_name),
+                Path("models") / self.model_name,
+                Path(__file__).resolve().parent.parent.parent / "models" / self.model_name,
+            ]
+            for c in candidates:
+                if c.exists():
+                    model_target = str(c)
+                    break
+
+            self.model = YOLOWorld(model_target)
             self.model.set_classes(self.prompts)
             if self.device:
                 self.model.to(self.device)

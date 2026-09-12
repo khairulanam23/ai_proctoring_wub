@@ -72,6 +72,7 @@ class EngineState(str, Enum):
     CREATED = "CREATED"  # Session configured but frame processing not yet started
     CALIBRATING = "CALIBRATING"  # Performing neutral gaze/pose calibration
     RUNNING = "RUNNING"  # Active frame processing
+    ACTIVE = "RUNNING"  # Canonical alias for active running session
     PAUSED = "PAUSED"  # Temporarily suspended by proctor or system
     FINALIZING = "FINALIZING"  # Actively flushing evidence and writing tamper-evident manifest
     FINALIZED = "FINALIZED"  # Completed and tamper-evident sealed
@@ -191,16 +192,27 @@ class ProctoringEngine:
         )
 
         # --- Provenance Metadata ---
+        face_det_backend = getattr(self._stages.face_detector, "backend_name", "opencv_cpu")
+        face_det_name = (
+            "ORT YuNet (CUDA)" if face_det_backend == "ort_cuda" else "OpenCV YuNet (CPU)"
+        )
         self.face_detector_info = DetectorInfo(
-            name="OpenCV YuNet",
+            name=face_det_name,
             version="2023mar",
             model_file="face_detection_yunet_2023mar.onnx",
+            device=getattr(self._stages.face_detector, "device", "cpu"),
             confidence_threshold=self.config.face_score_threshold,
         )
+
+        face_ver_backend = getattr(self._stages.face_verifier, "backend_name", "opencv_cpu")
+        face_ver_name = (
+            "ORT SFace (CUDA)" if face_ver_backend == "ort_cuda" else "OpenCV SFace (CPU)"
+        )
         self.face_verifier_info = DetectorInfo(
-            name="OpenCV SFace",
+            name=face_ver_name,
             version="2021dec",
             model_file="face_recognition_sface_2021dec.onnx",
+            device=getattr(self._stages.face_verifier, "device", "cpu"),
             confidence_threshold=self.config.face_match_threshold,
         )
         self.object_detector_info = DetectorInfo(
@@ -210,6 +222,16 @@ class ProctoringEngine:
             device=getattr(self._stages.object_detector, "device", "cpu"),
             confidence_threshold=self.config.object_confidence_threshold,
         )
+
+        # --- GPU Diagnostics ---
+        from proctoring.telemetry.gpu_diagnostics import get_gpu_diagnostics, log_gpu_diagnostics
+
+        self.gpu_diagnostics = get_gpu_diagnostics(
+            face_detector=self._stages.face_detector,
+            face_verifier=self._stages.face_verifier,
+            object_detector=self._stages.object_detector,
+        )
+        log_gpu_diagnostics(self.gpu_diagnostics)
         self.behaviour_detector_info = DetectorInfo(
             name="MediaPipe Face+Hand Landmarker",
             version="tasks-1.0",
@@ -340,6 +362,42 @@ class ProctoringEngine:
 
         LOGGER.info("Session %s started (strictness=%s)", self.session_id, self.policy.level.value)
 
+    def create_session(self) -> None:
+        """Explicit lifecycle method initializing a new proctoring examination session."""
+        self.start_session()
+
+    def reset_session(self) -> None:
+        """Explicit lifecycle method resetting all temporal tracking, debouncing, and analyzer states."""
+        self.state = EngineState.CREATED
+        self.is_active = False
+        self._frame_counter = 0
+        self._reported_detector_failures = set()
+
+        self._stages.reset()
+        self._evidence.reset()
+        self.observer.reset()
+
+        self.temporal_aggregator = self._build_temporal_aggregator()
+        self.timeline = SessionTimeline(session_id=self.session_id)
+        self.telemetry = PipelineTelemetryTracker(session_id=self.session_id)
+        self.error_handler = PipelineErrorHandler(session_id=self.session_id)
+        self._stages.error_handler = self.error_handler
+
+        LOGGER.info("Session %s reset to clean initial state", self.session_id)
+
+    def reset(self) -> None:
+        """Convenience alias for reset_session."""
+        self.reset_session()
+
+    def destroy_session(self) -> None:
+        """Explicit lifecycle method releasing model resources and memory buffers."""
+        self.is_active = False
+        if self.state not in (EngineState.FINALIZED, EngineState.CANCELLED):
+            self.state = EngineState.FINALIZED
+        self._evidence.clear()
+        self.close_analyzers()
+        LOGGER.info("Session %s destroyed and resources released", self.session_id)
+
     def pause(self, reason: str = "Proctor pause") -> None:
         """Temporarily pause session frame processing."""
         if self.state in (EngineState.FINALIZED, EngineState.CANCELLED):
@@ -352,10 +410,10 @@ class ProctoringEngine:
         LOGGER.info("Session %s paused: %s", self.session_id, reason)
 
     def resume(self, reason: str = "Proctor resume") -> None:
-        """Resume session frame processing after a pause."""
-        if self.state not in (EngineState.PAUSED, EngineState.RECOVERY_REQUIRED):
+        """Resume session frame processing after a pause or crash recovery."""
+        if self.state in (EngineState.FINALIZING, EngineState.FINALIZED, EngineState.CANCELLED):
             LOGGER.warning(
-                "Session %s is not paused or recovering (current state: %s)",
+                "Session %s cannot be resumed from terminal state %s",
                 self.session_id,
                 self.state.value,
             )
@@ -561,6 +619,7 @@ class ProctoringEngine:
         frame: np.ndarray | None,
         frame_index: int | None = None,
         timestamp_seconds: float | None = None,
+        audio_chunk: Any | None = None,
     ) -> FrameObservation:
         """Run one frame through stages 3-7 and return the structured observation."""
         t_start = time.perf_counter()
@@ -588,7 +647,9 @@ class ProctoringEngine:
             timing.total_frame_ms = (time.perf_counter() - t_start) * 1000.0
             return obs
 
-        if not self.is_active or self.state == EngineState.CREATED:
+        if self.state == EngineState.RECOVERY_REQUIRED:
+            self.resume("Automatic session resumption upon frame arrival")
+        elif not self.is_active or self.state == EngineState.CREATED:
             self.start_session()
 
         # --- Stage 3: Frame Validation & Preprocessing ---
@@ -655,6 +716,18 @@ class ProctoringEngine:
         # --- Stage 6b: Behavioural Analysis ---
         self._stages.analyze_behaviour(working_frame, obs, timing, per_model_times)
 
+        # --- Stage 6c: Audio & Multimodal Analysis (Phase 6) ---
+        self._stages.analyze_audio_and_multimodal(obs, audio_chunk, timing, per_model_times)
+
+        # Update object tracking and multi-subject spatial association
+        obs.tracked_objects = self._stages.tracker.update_objects(
+            detected_objects=obs.prohibited_objects,
+            timestamp=timestamp_seconds,
+            frame_index=frame_index,
+            subjects=obs.tracked_subjects,
+            hands=obs.tracked_hands,
+        )
+
         # Fallback presence from face landmarker if YuNet not configured
         if obs.face_status is FaceStatus.NOT_MEASURED and obs.facial_dynamics is not None:
             dynamics = obs.facial_dynamics
@@ -679,6 +752,7 @@ class ProctoringEngine:
             bboxes=[self._to_xyxy(b) for b in obs.face_boxes],
             confidences=obs.face_confidences,
             enrolled_present=obs.enrolled_face_present,
+            tracked_subjects=obs.tracked_subjects,
         )
         self.temporal_aggregator.update_object_observations(
             detected_objects=obs.prohibited_objects,
@@ -686,9 +760,14 @@ class ProctoringEngine:
             frame_index=frame_index,
             detector=self.object_detector_info,
             hand_analysis=obs.hand_analysis,
+            tracked_objects=obs.tracked_objects,
         )
+        behaviours = self.observer.map_to_events(obs)
+        if obs.multimodal_observation is not None:
+            mm_events = self._stages.multimodal_correlator.map_to_events(obs.multimodal_observation)
+            behaviours.update(mm_events)
         self.temporal_aggregator.update_behaviour_observations(
-            active_behaviours=self.observer.map_to_events(obs),
+            active_behaviours=behaviours,
             timestamp=timestamp_seconds,
             frame_index=frame_index,
             detector=self.behaviour_detector_info,
@@ -711,10 +790,10 @@ class ProctoringEngine:
 
         # Progressive Durable Persistence: flush any closed events to disk immediately
         spooled_events = self._persist_new_events()
-        if spooled_events or (self._frame_counter % 25 == 0):
+        if spooled_events or (self._frame_counter % 5 == 0):
             self._write_checkpoint(
                 self.state,
-                last_frame_index=frame_index,
+                last_frame_index=self._frame_counter,
                 last_timestamp_seconds=timestamp_seconds,
             )
 
@@ -948,7 +1027,11 @@ class ProctoringEngine:
     # ------------------------------------------------------------------
 
     @classmethod
-    def recover_session(cls, session_path: str | Path) -> "ProctoringEngine":
+    def recover_session(
+        cls,
+        session_path: str | Path,
+        auto_resume: bool = True,
+    ) -> "ProctoringEngine":
         """Recover an interrupted or crashed session from its durable checkpoint and journals."""
         path = Path(session_path)
         session_dir = path if path.is_dir() else path.parent
@@ -961,22 +1044,44 @@ class ProctoringEngine:
         config = SessionConfig.from_dict(cfg_dict) if cfg_dict else SessionConfig()
         config.session_id = checkpoint.session_id
         config.student_name = checkpoint.student_name
+        config.output_dir = session_dir.parent
 
         engine = cls(config=config)
-        engine.state = EngineState.RECOVERY_REQUIRED
         engine.started_at_iso = checkpoint.started_at_iso
         engine._sequence_number = checkpoint.sequence_number
-        engine._frame_counter = checkpoint.last_frame_index
         engine.journal = journal
+        engine.evidence_manager.package_dir = session_dir
+        engine._evidence.evidence_manager = engine.evidence_manager
 
-        # Restore closed events from append-only journal
+        # 1. Restore closed events from append-only journal
         persisted_events = journal.read_events()
         engine.temporal_aggregator.closed_events = persisted_events
         engine._persisted_events_count = len(persisted_events)
 
-        # Restore timeline entries
-        for t_entry in journal.read_timeline():
+        # 2. Restore timeline entries
+        timeline_entries = journal.read_timeline()
+        for t_entry in timeline_entries:
             engine.timeline.entries.append(TimelineEntry.from_dict(t_entry))
+
+        # 3. Counter restoration: reconcile checkpoint and timeline
+        if timeline_entries:
+            max_tl_frame = max(int(e.get("frame_index", 0)) for e in timeline_entries)
+            engine._frame_counter = max(
+                checkpoint.last_frame_index,
+                checkpoint.processed_frames,
+                max_tl_frame + 1,
+                len(timeline_entries),
+            )
+        else:
+            engine._frame_counter = max(checkpoint.last_frame_index, checkpoint.processed_frames)
+
+        # 4. EngineState restoration
+        if auto_resume:
+            engine.state = EngineState.RUNNING
+            engine.is_active = True
+        else:
+            engine.state = EngineState.RECOVERY_REQUIRED
+            engine.is_active = False
 
         LOGGER.info(
             "Session %s recovered successfully: state=%s, %d events, %d frames",

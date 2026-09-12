@@ -149,8 +149,22 @@ class ObjectDetector:
                 "'pip install -e \".[detection]\"' in your environment."
             ) from e
 
-        target = str(self.model_path) if self.model_path is not None else self.model_name
-        self.model = YOLO(target)
+        target = self.model_name
+        if self.model_path is not None and self.model_path.exists():
+            target = str(self.model_path)
+        else:
+            candidates = [
+                Path(self.model_name),
+                Path("models") / self.model_name,
+                Path(__file__).resolve().parent.parent.parent / "models" / self.model_name,
+            ]
+            for c in candidates:
+                if c.exists():
+                    target = str(c)
+                    break
+        from proctoring.core.model_registry import ModelRegistry
+
+        self.model = ModelRegistry.get_yolo(target, device=self.device)
 
         # Ensure model weights reside on target device and warm up CUDA kernels
         if self.device != "cpu":
@@ -158,15 +172,16 @@ class ObjectDetector:
                 if hasattr(self.model, "to"):
                     self.model.to(self.device)
                 # Warmup pass to initialize CUDA context and prevent cold-start latency spike
-                dummy_input = np.zeros((64, 64, 3), dtype=np.uint8)
-                self.model(dummy_input, device=self.device, verbose=False)
+                dummy = np.zeros((320, 320, 3), dtype=np.uint8)
                 try:
-                    import torch
-
-                    if torch.cuda.is_available():
-                        torch.cuda.synchronize()
-                except Exception:
-                    pass
+                    self.model.predict(
+                        source=dummy,
+                        conf=self.confidence_threshold,
+                        device=self.device,
+                        verbose=False,
+                    )
+                except Exception as e:
+                    LOGGER.debug("CUDA warmup pass warning: %s", e)
                 LOGGER.info(
                     "Successfully loaded and warmed up YOLO model on target device '%s'", self.device
                 )

@@ -857,7 +857,8 @@ class ProctoringService:
         try:
             sha_file = Path(summary.package_dir) / "manifest.sha256"
             if sha_file.exists():
-                manifest_sha = sha_file.read_text().strip()
+                parts = sha_file.read_text().strip().split()
+                manifest_sha = parts[0] if parts else None
             else:
                 import json
                 manifest = json.loads((Path(summary.package_dir) / "manifest.json").read_text())
