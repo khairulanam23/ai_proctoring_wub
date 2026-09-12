@@ -161,7 +161,7 @@ data/results/<session_id>/
 │   ├── ev_0001_phone.jpg
 │   └── ev_0002_person.jpg
 ├── manifest.json         # SHA-256 file table of all package contents
-└── manifest.sha256       # Detached SHA-256 signature sealing manifest.json
+└── manifest.sha256       # Detached SHA-256 integrity hash sealing manifest.json
 ```
 
 ### Integrity Verification
@@ -230,7 +230,7 @@ The engine serves an HTTP/REST and Server-Sent Events (SSE) API on port **7001**
 ### 8.2 Virtual Environment Installation
 ```bash
 # 1. Clone repository and enter directory
-cd /home/phant0m/Phantom/ai_proctoring_wub
+cd ai_proctoring_wub
 
 # 2. Initialize virtual environment
 python3 -m venv .venv

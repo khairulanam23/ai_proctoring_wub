@@ -549,7 +549,7 @@ Contains verified challenging test cases designed to prevent regressions:
 
 ## 23. Technical Debt & Cleanup Log
 
-1. **Manifest Self-Hashing**: Corrected in Phase A; detached `manifest.sha256` signature adopted.
+1. **Manifest Self-Hashing**: Corrected in Phase A; detached `manifest.sha256` integrity hash adopted.
 2. **Missing Test Fixtures**: Synthetic black frame fixtures in `tests/tools` replaced with standardized multi-sample facial portraits in `data/samples/`.
 3. **In-Memory Evidence Eviction Risk**: Replaced with progressive on-disk atomic writing via `SessionJournalManager`.
 4. **Moodle-Specific Naming**: Cleaned from core domain; replaced with platform-neutral `exam_id`, `candidate_id`, `session_id`.
@@ -687,7 +687,7 @@ interface ControlPayload {
 interface SessionFinalizeResponse {
   session_id: string;
   state: "COMPLETED" | "FAILED";
-  manifest_sha256: string; // Detached SHA-256 manifest signature
+  manifest_sha256: string; // Detached SHA-256 manifest integrity hash
   total_frames_processed: number;
   total_observations: number;
 }
@@ -737,7 +737,7 @@ During Phase 8 verification, `tests/integration/test_camera_lifecycle.py::test_s
 - **Continuous Live Stream Throughput**: 36.33 FPS (vs Phase 7 23.34 FPS baseline, +55.6% speedup).
 - **Mean Frame Latency**: 27.18 ms (vs Phase 7 42.83 ms baseline, -36.5% latency reduction).
 - **Long-Run Stability (3 sessions, 450 frames)**: +0 MB VRAM growth, +0 threads leaked, +0 file descriptors leaked.
-- **Evidence Integrity**: All session archives verified with 64-character SHA-256 detached signatures.
+- **Evidence Integrity**: All session archives verified with 64-character SHA-256 detached integrity hashes.
 - **Security & Integrity**: 0 mocks, 0 synthetic fallbacks in production code; all model weights unified under `models/`.
 
 ---
@@ -746,12 +746,19 @@ During Phase 8 verification, `tests/integration/test_camera_lifecycle.py::test_s
 
 ```text
 ===============================================================================
-AI PROCTORING ENGINE STATUS: FROZEN (VERSION 6.0)
+AI PROCTORING ENGINE
+PHASE 8 COMPLETE
+FINAL REPOSITORY CLEANUP COMPLETE
+PRODUCTION SERVICE FROZEN
 ===============================================================================
 The AI Proctoring Engine has completed all engineering phases (Phases 0 through 8).
 The system is PRODUCTION READY for deployment with ExamController.
 Further feature development is FROZEN. Maintenance is restricted to security
 patches and upstream model weight updates evaluated through the gated registry.
+The AI repository is now considered a production service, not an active
+experimental workspace. Future changes must be treated as deliberate
+maintenance/versioned releases. Do not continue normal feature development
+in this directory.
 ===============================================================================
 ```
 

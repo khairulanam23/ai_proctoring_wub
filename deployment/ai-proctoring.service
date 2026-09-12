@@ -3,6 +3,10 @@ Description=AI Proctoring Engine Background Service
 After=network.target nvidia-persistenced.service
 Wants=network.target
 
+# NOTE FOR PRODUCTION DEPLOYMENT:
+# Configure User, Group, WorkingDirectory, and PATH according to your target production host layout.
+# Example: User=proctoring, WorkingDirectory=/opt/ai_proctoring_wub
+
 [Service]
 Type=simple
 User=phant0m
