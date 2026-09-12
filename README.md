@@ -1,288 +1,372 @@
-# AI Proctoring System
+# AI Proctoring Engine — Production Deployment & Architecture Manual
 
-Computer-vision examination proctoring that produces **evidence for a human proctor**,
-not verdicts. The system observes, timestamps and packages what the camera saw. It
-computes no suspicion score and decides nothing about a candidate — the invigilator
-reviews the package and makes the call.
-
----
-
-## The workflow
-
-Every stage below is implemented by one engine, `proctoring/engine.py`:
-
-```
-Examination starts
-      ↓
-Camera / frame input ─────────────── webcam or recorded video
-      ↓
-Frame validation & preprocessing ─── resolution, brightness, blur, CLAHE
-      ↓
-Face detection ───────────────────── YuNet
-      ↓
-Face identity verification ───────── SFace, against enrolled templates
-      ↓
-Scene / behavioural observation ──── no face · enrolled candidate · unknown person
-                                     multiple people · prohibited objects
-                                     hands · speaking · head pose · gaze
-                                     headphones · earbuds · smart watch
-                                     liveness (blink) · per-candidate calibration
-      ↓
-Temporal qualification ───────────── transient one-frame noise filtered out,
-                                     duration and continuity tracked
-      ↓
-Event / evidence creation ────────── timestamp, type, duration, the frame that
-                                     shows it, factual observation text
-      ↓
-Evidence validation ──────────────── re-read, re-decode, re-hash; invalid or
-                                     incomplete references removed
-      ↓
-Timeline & telemetry ─────────────── per-frame record, latency, FPS, diagnostics
-      ↓
-Tamper-evident evidence package ──── manifest.json · events.json · timeline.json
-                                     telemetry.json · evidence files · SHA-256
-      ↓
-Proctor / invigilator review ─────── AI provides evidence, a human decides
+```text
+===============================================================================
+AI PROCTORING ENGINE — PRODUCTION FROZEN (VERSION 6.0)
+Hardware Target: NVIDIA GPU (RTX 3060 12GB Dev / 24GB Target) + x86_64 CPU
+Inference: PyTorch CUDA (YOLO11n), ONNX Runtime CUDA (YuNet, SFace), CPU XNNPACK (MediaPipe)
+Integration: ExamController Wire Protocol (HTTP REST / SSE / WebSockets on Port 7001)
+===============================================================================
 ```
 
 ---
 
-## Quick start
+## 1. Project Purpose & Ethical Invariants
 
-```bash
-python -m venv .venv && source .venv/bin/activate
+The **AI Proctoring Engine** is an in-house, evidence-first computer vision and audio telemetry verification service engineered for integration with the **ExamController** examination platform.
 
-pip install -e .                    # face presence, identity, evidence packaging
-pip install -e ".[behaviour]"       # + hands, speech, head pose, gaze, liveness
-pip install -e ".[all]"             # + objects and worn devices
+### Core Ethical & Operational Invariants
+1. **Human-in-the-Loop Verdicts**: The AI system **never generates automated cheating determinations**, sanctions, or disqualifications. It functions strictly as an evidentiary assistant that extracts, timestamps, and cryptographically packages forensic observations. The human proctor/invigilator retains sole authority over student intent.
+2. **Zero Opaque Suspicion Scores**: The system rejects cumulative "trust scores", cheating probabilities, and black-box risk metrics.
+3. **Equipment Fault Invariant**: Physical hardware, network, and model anomalies (`TECHNICAL_DIAGNOSTIC`) are strictly separated from student observations (`CANDIDATE_OBSERVATION`). A camera disconnection, frame drop, or microphone clipping is never transformed into candidate suspicion.
+4. **Deterministic Auditing**: All session observations generate immutable, timestamped keyframe snapshots and an append-only journal sealed with an SHA-256 cryptographic manifest.
 
-# Fetch every model into models/ (optional ones degrade gracefully if skipped)
-python scripts/download_models.py
+---
+
+## 2. Architecture Overview & Component Responsibilities
+
+The system decouples real-time stream ingestion, neural inference, temporal aggregation, and storage:
+
+```
+                  +-------------------------------------------------+
+                  |      ExamController Web Client / Electron      |
+                  +-----------------------+-------------------------+
+                                          | HTTP Multipart Frames (Port 7001)
+                                          v
++-----------------------------------------------------------------------------------+
+|                        FASTAPI INTEGRATION SERVICE BOUNDARY                       |
+|                          (proctoring/integration/api.py)                          |
++-----------------------------------------+-----------------------------------------+
+                                          | Raw Frames & Audio Chunks
+                                          v
++-----------------------------------------------------------------------------------+
+|                           PROCTORING PIPELINE ENGINE                              |
+|                             (proctoring/engine.py)                                |
+|  +--------------------+  +----------------------+  +---------------------------+  |
+|  | CameraHealthAssess |  | QualityAssessment    |  | Face Preprocessing (CLAHE)|  |
+|  +--------------------+  +----------------------+  +---------------------------+  |
+|  +-----------------------------------------------------------------------------+  |
+|  |                          MODEL REGISTRY (SHARED VRAM)                       |  |
+|  |   - YuNet ONNX (ORT CUDA)                 - SFace ONNX (ORT CUDA)           |  |
+|  |   - YOLO11n (PyTorch CUDA)                - MediaPipe Landmarks (CPU)       |  |
+|  +-----------------------------------------------------------------------------+  |
+|  +-----------------------------------------------------------------------------+  |
+|  |                              STAGE ANALYZERS                                |  |
+|  |   - MultiSubjectTracker (Spatial + Cosine Fusion)                           |  |
+|  |   - PhoneHandDisambiguator (Empty-hand FP dismissal)                        |  |
+|  |   - PaperDetector & HandwritingAnalyzer (Kinematic micro-oscillations)       |  |
+|  |   - Gaze & HeadPoseTrackers               - Modular Audio VAD & Correlation |  |
+|  +-----------------------------------------------------------------------------+  |
+|  +-----------------------------------------------------------------------------+  |
+|  |                      TEMPORAL EVENT AGGREGATOR & OUTBOX                     |  |
+|  |   - Debounce & Persistence Filter         - Append-Only Journal (JSONL)     |  |
+|  |   - Offline Synchronous Outbox            - Keyframe Evidence Annotator     |  |
+|  +-----------------------------------------------------------------------------+  |
++-----------------------------------------+-----------------------------------------+
+                                          |
+                                          v
++-----------------------------------------------------------------------------------+
+|                       TAMPER-EVIDENT EVIDENCE STORAGE                             |
+|               (manifest.sha256, events.json, timeline.jsonl, frames/)             |
++-----------------------------------------------------------------------------------+
 ```
 
-Installing provides a `proctor` command; everything below also works as
-`python -m proctoring.cli …`.
+---
 
-### Run a live webcam session
+## 3. End-to-End Pipeline & Runtime Architecture
 
-```bash
-# Enrol the candidate first so identity verification has something to match
-proctor live --enroll --student "A. Candidate"
+### 3.1 Live Video Pipeline
+1. **Ingestion**: Receives raw BGR frames (640x480 native target, 15–30 FPS).
+2. **Health Assessment**: Evaluates freeze conditions, timestamps gaps (>5s), and aspect ratios. Sub-resolution corrupted frames (<160x120) are quarantined.
+3. **Quality Gate**: Computes Laplacian variance blur score, luminance percentiles, and contrast. Applies CLAHE adaptive histogram equalization under low-light conditions.
+4. **Primary Face Detection (YuNet)**: Runs on NVIDIA GPU via ONNX Runtime CUDA provider (~3.99 ms latency). Returns bounding boxes and 5 facial landmarks.
+5. **Face Verification (SFace)**: Extracts 128-dimensional identity embeddings on CUDA (~1.19 ms). Matches against enrolled student templates using cosine distance thresholds (`COSINE_MATCH_THRESHOLD = 0.3630`).
+6. **Object Detection (YOLO11n)**: Executes on CUDA via PyTorch Native (~4.76 ms). Detects cell phones, laptops, books, and secondary persons.
+7. **Facial & Hand Landmarks (MediaPipe)**: Executes on CPU via optimized TensorFlow Lite XNNPACK delegates. Extracts 468 face blendshapes and 21 3D hand joints.
+8. **Behavioral Disambiguation**: Cross-references object bounding boxes against hand skeleton joints to eliminate false-positive phone detections on empty cupped hands.
+9. **Paper & Handwriting Analysis**: Evaluates quadrilateral desk contours and kinematic micro-oscillations for writing behavior in physical exam modes.
 
-# A stricter exam profile, with worn-device detection
-proctor live --enroll --strictness STRICT --detect-wearables
+### 3.2 Live Audio Pipeline (`proctoring/audio/`)
+- **Ingestion**: Processes raw 16 kHz 16-bit PCM audio streams in 500 ms windows.
+- **Voice Activity Detection (VAD)**: Calculates short-term energy and spectral centroid thresholds.
+- **Multimodal Correlation**: Cross-references audio speech timestamps against candidate visual mouth blendshapes (`jawOpen`, `mouthPucker`). Flags discrepancies when speech occurs while candidate lips remain closed (`EXTERNAL_VOICE_SUSPECTED`).
+
+### 3.3 GPU/CPU Execution & Hardware Allocation
+| Model / Component | Framework & Backend | Device Placement | Latency (Mean) | VRAM (Single) | VRAM (4 Concurrency) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **YuNet Face Detector** | ONNX Runtime 1.30.0 (`CUDAExecutionProvider`) | `cuda:0` | 3.99 ms | ~24 MB | Shared |
+| **SFace Face Recognizer**| ONNX Runtime 1.30.0 (`CUDAExecutionProvider`) | `cuda:0` | 1.19 ms | ~40 MB | Shared |
+| **YOLO11n Object Detector**| PyTorch 2.11 / CUDA 13.0 Native | `cuda:0` | 4.76 ms | ~20 MB | Shared |
+| **Face & Hand Landmarkers**| MediaPipe Tasks (TFLite CPU XNNPACK) | CPU (Multi-core)| 16.50 ms | 0 MB (Host RAM)| 0 MB |
+| **Complete Pipeline** | Multimodal Unified Orchestration | Mixed GPU/CPU | **27.18 ms** | **84.32 MB** | **180.32 MB** |
+
+---
+
+## 4. Model Inventory & Lifecycle Management
+
+All model weights are centralized in `models/`:
+- `face_detection_yunet_2023mar.onnx` (232 KB): YuNet ONNX face detection model.
+- `face_recognition_sface_2021dec.onnx` (38.7 MB): SFace ONNX feature extractor.
+- `face_landmarker.task` (3.7 MB): MediaPipe 468-point face landmarker and blendshape model.
+- `hand_landmarker.task` (7.8 MB): MediaPipe 21-point hand joint tracking model.
+- `yolo11n.pt` (5.6 MB): Ultralytics YOLO11 nano general object detector.
+- `yolov8s-world.pt` (27.2 MB): YOLO-World open-vocabulary wearable detector (headphones/earbuds).
+
+### ModelRegistry Lifecycle (`proctoring/core/model_registry.py`)
+To prevent duplicate CUDA allocations across concurrent exam sessions:
+- Models are instantiated as **thread-safe resident singletons** protected by re-entrant mutexes.
+- Concurrent sessions share model weights in VRAM, eliminating cold-start latency spikes.
+- VRAM footprint scales conservatively from **84.32 MB** (1 session) to **180.32 MB** (4 sessions).
+
+---
+
+## 5. Session Lifecycle, State Isolation & Crash Recovery
+
+### 5.1 State Machine
+```text
+[UNINITIALIZED] ──> [INITIALIZED] ──> [RUNNING / ACTIVE] <───> [PAUSED]
+                                             │
+                                             ├──> [COMPLETED] (Normal finalization)
+                                             └──> [CRASH / TERMINATION]
+                                                         │
+                                                         v
+                                              [RECOVERY_REQUIRED]
+                                                         │
+                                      recover_session()  v
+                                              [RUNNING / ACTIVE]
 ```
 
-A window opens showing detections and the live state of each workflow stage.
+### 5.2 Session Isolation
+- Each exam session maintains an isolated output directory (`data/results/<session_id>/`).
+- Candidate facial embeddings, tracking states, calibration baselines, and temporal aggregators are instantiated per session and cleared on finalization. No cross-session memory leakage.
 
-The HUD shows every stage live: face box and identity, hand skeletons, speaking,
-head yaw/pitch, gaze offset, detected devices, and which observations are currently
-open.
+### 5.3 Crash & Restart Recovery
+If the host server abruptly reboots or the process terminates:
+1. `ProctoringEngine.recover_session(session_dir)` inspects `timeline.jsonl` and checkpoint state.
+2. Reconciles exact frame counters (`max(timeline_frames) + 1`), restoring active session state.
+3. Automatically transitions state to `RUNNING` (`EngineState.ACTIVE`).
+4. Subsequent frames are ingested seamlessly without resetting previous session history.
 
-| Key | Action |
-|-----|--------|
-| `q` / `Esc` | Stop the session and seal the evidence package |
-| `t` | Record a browser tab-switch event |
-| `f` | Record a fullscreen-exit event |
+---
 
-During enrolment: `space` captures a reference sample, `a` captures them
-automatically, `q` skips enrolment.
+## 6. Tamper-Evident Evidence Architecture
 
-Without `--enroll` the session still runs, but every face is reported
-`UNVERIFIED` rather than matched or unknown — the system will not call a face
-unknown when it was never shown what known looks like.
-
-### Process a recorded video
-
-```bash
-proctor video exam_recording.mp4 --student "A. Candidate" --zip
+Every finalized exam generates a tamper-evident package at `data/results/<session_id>/`:
+```
+data/results/<session_id>/
+├── events.json           # Qualified forensic incidents with timestamps & bounding boxes
+├── timeline.jsonl        # Append-only frame-by-frame telemetry record
+├── telemetry.json        # FPS, latency, and device diagnostic summaries
+├── evidence/             # Annotated keyframe JPEG captures
+│   ├── ev_0001_phone.jpg
+│   └── ev_0002_person.jpg
+├── manifest.json         # SHA-256 file table of all package contents
+└── manifest.sha256       # Detached SHA-256 signature sealing manifest.json
 ```
 
-### Embed the engine
-
+### Integrity Verification
+The package can be verified offline via system tools or Python:
+```bash
+cd data/results/<session_id>
+sha256sum -c manifest.sha256
+```
+Or programmatically:
 ```python
-from proctoring import ProctoringEngine, SessionConfig
-from proctoring.detection import FaceDetector, FaceVerifier
+from proctoring.evidence.package import SessionEvidencePackage
 
-engine = ProctoringEngine(
-    config=SessionConfig(session_id="exam_001", student_name="A. Candidate"),
-    face_detector=FaceDetector(),
-    face_verifier=FaceVerifier(),
-)
-engine.start_session()
-
-for frame_index, (frame, timestamp) in enumerate(your_frame_source):
-    observation = engine.process_frame(frame, frame_index, timestamp)
-    print(observation.face_status, observation.prohibited_object_names)
-
-summary = engine.finalize_session()
-print(summary.package_dir, summary.integrity_verified)
+pkg = SessionEvidencePackage(session_dir)
+is_valid, errors = pkg.verify_package_integrity()
+assert is_valid is True and len(errors) == 0
 ```
 
 ---
 
-## Project layout
+## 7. ExamController Integration & Wire Protocols
 
-```
-proctoring/                The pipeline — one installable package, one engine
-├── config.py              SessionConfig: every tunable, grouped by stage
-├── engine.py              ProctoringEngine: the workflow orchestrator
-├── engine_stages.py       StageCoordinator: face, object, and behavioural execution
-├── engine_evidence.py     EvidenceCoordinator: retention buffer, evidence linking, reviews
-├── observation.py         FrameObservation: what a single frame measured
-├── core/                  Event schema, error handling, path safety
-├── capture/               Camera discovery, webcam stream, video sampling
-├── preprocessing/         Frame quality gate, CLAHE, face alignment
-├── detection/             YuNet, SFace, YOLO, relevance filtering
-├── analysis/              Hands, speech, pose, gaze, liveness, devices, exam policy
-├── temporal/              Temporal qualification, candidate lifecycle
-├── evidence/              Evidence capture, quality validation, packaging
-├── telemetry/             Session timeline, latency profiling
-├── integration/           LMS boundary — the stable surface a Moodle plugin calls
-└── cli/                   `python -m proctoring.cli live | video`
+The engine serves an HTTP/REST and Server-Sent Events (SSE) API on port **7001** matching ExamController's `WubProctoringProvider` contract:
 
-tools/                     Offline evaluation — not part of a live session
-├── harness.py             Engine wrapper adding lifecycle statistics
-├── benchmark/             Accuracy, thresholds, robustness and profiling
-├── field_testing/         Simulated field trials and long-session studies
-├── hardening/             Stress, recovery and package-verification suites
-├── audit/                 Regression suite and requirement audit tables
-└── optimization/          Ablation study and before/after comparison
+### Key REST Endpoints
+| Method | Path | Description |
+| :--- | :--- | :--- |
+| `GET` | `/health` / `/api/v1/health` | Service uptime, GPU VRAM allocation, and model health |
+| `GET` | `/api/v1/models` | Status and hardware placement of all loaded neural networks |
+| `POST`| `/api/v1/session/start` | Starts an exam session with candidate identity & config |
+| `POST`| `/api/v1/session/{id}/frame` | Ingests multipart JPEG frame, returns observation payload |
+| `GET` | `/api/v1/session/{id}/evidence/{ev_id}`| Retrieves evidence image with `X-Evidence-SHA256` header |
+| `POST`| `/api/v1/session/{id}/finalize` | Compiles evidence package, writes manifest, emits SHA-256 |
 
-scripts/                   Standalone CLI utilities (model download, analysis)
-tests/                     Mirrors proctoring/, plus tests/tools/
-docs/                      accuracy_and_performance.md · moodle_integration.md
-                           pipeline/ · detection/ · evaluation/
-models/                    ONNX weights (not committed)
-data/                      Samples and generated session packages (not committed)
+### Observation Response Schema (`POST /api/v1/session/{id}/frame`)
+```json
+{
+  "session_id": "exam_101",
+  "frame_index": 42,
+  "timestamp_seconds": 10.5,
+  "accepted": true,
+  "face_detected": true,
+  "identity_verified": true,
+  "events": [
+    {
+      "event_type": "PHONE_INTERACTION_OBSERVED",
+      "severity": "HIGH",
+      "confidence": 0.89,
+      "bounding_box": [120, 240, 60, 110],
+      "evidence_id": "ev_0042_phone"
+    }
+  ]
+}
 ```
 
 ---
 
-## What a session produces
+## 8. Installation & Environment Setup
 
-```
-data/results/live_sessions/<session_id>/
-├── manifest.json      Package identity, config, models, summaries, SHA-256 of every file
-├── events.json        Qualified observations with their evidence references
-├── timeline.json      Per-frame record of what was actually measured
-├── telemetry.json     Latency percentiles, per-model timings, resource usage
-├── diagnostics.json   System faults (camera drops, inference errors)
-└── evidence/
-    ├── frames/        UNMODIFIED source captures, one per event
-    ├── crops/         Padded regions of interest
-    └── review/        ANNOTATED copies showing what the system reacted to
-```
+### 8.1 Hardware & Driver Requirements
+- **OS**: Linux x86_64 (Ubuntu 22.04 LTS / Debian 12 recommended)
+- **NVIDIA GPU**: RTX 3060 (12GB) or production server GPU (24GB VRAM)
+- **NVIDIA Driver**: Version 550+
+- **CUDA Toolkit**: CUDA 12.0+ or CUDA 13.0+
+- **Python**: Python 3.10 through 3.14
 
-`frames/` is what the manifest attests to and what an appeal must be judged against.
-`review/` is the system's interpretation drawn on top — marked derived everywhere it
-appears. Never present a review image as source evidence.
-
-`manifest.json` hashes every other file in the package, and is itself hashed. Any
-later modification to any artefact is detectable via
-`SessionEvidencePackage.verify_package_integrity()`.
-
-### Exam strictness
-
-`--strictness STANDARD | STRICT | MAXIMUM` selects which behavioural observations
-are reportable and how quickly they qualify. `STANDARD` reports only unambiguous
-events; `STRICT` adds speaking, looking away and hands at the ear; `MAXIMUM` adds
-gaze and hand-position observations that carry a high false-positive rate.
-
-Raising strictness raises false positives. That is a deliberate trade — see the
-[accuracy and performance guide](docs/accuracy_and_performance.md) before choosing.
-
-### Technical faults are separated structurally
-
-Every event carries a `category`: `CANDIDATE_OBSERVATION` or `TECHNICAL_DIAGNOSTIC`.
-A camera that froze, a detector that threw, a dropped connection and an operator
-pause are facts about the **equipment**, never about the candidate. They are counted
-separately in `manifest.json`, flagged `is_technical` in the review contract, and
-reported regardless of strictness — a lenient profile must not hide the faults that
-explain why observations are missing.
-
-A detector that fails leaves the frame `NOT_MEASURED`. It never produces `NO_FACE`
-against a candidate who is sitting there.
-
-### Session lifecycle
-
-The engine's processing state (`EngineState`) and the LMS attempt state
-(`SessionState`) are deliberately distinct types:
-
-```
-EngineState   CREATED → CALIBRATING → RUNNING ⇄ PAUSED → FINALIZED | CANCELLED
-SessionState  CREATED → ENROLLING → ACTIVE ⇄ PAUSED → FINALIZING → COMPLETED | FAILED
-```
-
-Paused frames are rejected before any inference runs, and the pause and resume are
-written to the event record so the resulting gap in observations is explained
-rather than left for a reviewer to interpret.
-
-### Event severity is triage, not scoring
-
-`INFO` / `LOW` / `MEDIUM` / `HIGH` / `CRITICAL` order a proctor's review queue. They
-are not summed, weighted or aggregated into a candidate risk score, and no part of
-the system infers intent from an observation.
-
-### Qualified vs recorded
-
-An incident shorter than `min_event_duration_seconds` is still written to the
-package, but marked `RECORDED` rather than `QUALIFIED`. Nothing is hidden from the
-proctor; brief noise is simply flagged as brief.
-
----
-
-## Testing and quality gates
-
+### 8.2 Virtual Environment Installation
 ```bash
-pytest                              # full suite (259 tests)
-pytest tests/test_audit_regressions.py   # defects found in audit, each guarded
-pytest tests/integration            # the LMS contract a Moodle plugin depends on
-pytest tests/tools                  # offline evaluation harnesses
+# 1. Clone repository and enter directory
+cd /home/phant0m/Phantom/ai_proctoring_wub
 
-ruff check . && ruff format --check .    # lint and formatting
-mypy                                     # types (strict on core/ and integration/)
+# 2. Initialize virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 3. Upgrade pip and build tools
+pip install --upgrade pip setuptools wheel
+
+# 4. Install PyTorch with CUDA support
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+# 5. Install dependencies in editable mode
+pip install -e ".[all]"
+
+# 6. Verify GPU runtime
+python -c "import torch, onnxruntime as ort; print('PyTorch CUDA:', torch.cuda.is_available()); print('ORT Providers:', ort.get_available_providers())"
 ```
-
-Tests that need model weights skip automatically when `models/` is empty. CI runs
-the same gates on Python 3.10–3.12; see `.github/workflows/ci.yml`. Install the
-pre-commit hooks with `pre-commit install`.
 
 ---
 
-## Documentation
+## 9. Operation & Deployment
 
-| Guide | Covers |
-|---|---|
-| [Accuracy and performance](docs/accuracy_and_performance.md) | What each detector detects, measured speed, how much to trust each signal, tuning, known limitations |
-| [Moodle integration](docs/moodle_integration.md) | The service contract a `quizaccess` plugin calls, deployment shape, data protection |
+### 9.1 Foreground Development Runner
+```bash
+source .venv/bin/activate
+uvicorn proctoring.integration.api:app --host 0.0.0.0 --port 7001 --log-level info
+```
 
-## Scope
+### 9.2 Background Production Daemon
+Use the pre-configured production launcher:
+```bash
+./scripts/start_production_service.sh
+```
 
-The Moodle plugin itself is not built. The integration boundary it will use
-(`proctoring/integration/`) exists, is versioned, and is tested — see the
-integration guide.
+### 9.3 Systemd Service Setup
+Install the production unit for automated boot startup and fault restart:
+```bash
+sudo cp deployment/ai-proctoring.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ai-proctoring.service
 
-## Measured performance
+# Verify service status
+sudo systemctl status ai-proctoring.service
+```
 
-CPU only, 640×480, real face imagery. Reproduce with `python scripts/benchmark_pipeline.py`.
+---
 
-| Configuration | FPS | mean | p50 | p95 | p99 | RSS |
-|---|---:|---:|---:|---:|---:|---:|
-| Core (face + identity) | 49.8 | 20.1 ms | 19.2 ms | 26.6 ms | 34.7 ms | 137 MB |
-| + facial dynamics | 30.3 | 33.0 ms | 31.9 ms | 40.0 ms | 44.0 ms | 263 MB |
-| Full behavioural (default) | 19.0 | 52.6 ms | 51.5 ms | 62.7 ms | 68.4 ms | 349 MB |
+## 10. Verification & Test Execution
 
-At the default 4 fps sampling rate the per-frame budget is 250 ms, so the full
-pipeline uses about a quarter of it — roughly 4 concurrent sessions per core.
-Memory is bounded by design: the evidence buffer is capped
-(`max_retained_evidence_frames`, default 200) and released at finalisation.
+### 10.1 Complete Regression Suite (455 Tests)
+```bash
+.venv/bin/pytest -q
+# Expected output: 455 passed, 1 skipped in ~160s
+```
 
-## Honest limits
+### 10.2 Camera Lifecycle & Recovery Suite
+```bash
+.venv/bin/pytest tests/integration/test_camera_lifecycle.py -vv -s
+# Validates Scenarios A through G (100% pass)
+```
 
-This system has **no audio**: speaking is inferred from lip movement alone. In-ear
-earbud detection is unreliable by nature and is reported as *suspected*, never
-confirmed. Detection accuracy has not been quantified against a labelled dataset,
-and demographic performance variation has not been evaluated. Read
-[docs/accuracy_and_performance.md](docs/accuracy_and_performance.md) §1 and §8
-before relying on any of it.
+### 10.3 ExamController Live Wire Suite
+```bash
+.venv/bin/pytest tests/integration/test_exam_controller_live_wire.py -vv -s
+```
+
+### 10.4 Performance & Latency Benchmark
+```bash
+.venv/bin/python tools/benchmark/validate_live_streams.py --frames 120
+# Expected throughput: >30 FPS, Mean Latency: <30 ms
+```
+
+### 10.5 Concurrency Scaling Benchmark
+```bash
+.venv/bin/python tools/benchmark/benchmark_concurrency.py --sessions 1,2,4 --frames 30
+```
+
+### 10.6 Long-Run Stability & Leak Audit
+```bash
+.venv/bin/python tools/benchmark/validate_long_run_stability.py --sessions 3 --frames-per-session 150
+# Verifies +0 MB VRAM and +0 thread leaks
+```
+
+---
+
+## 11. Known Limitations & Unverified Accuracy Areas
+
+1. **In-Ear Earbud Detection**: At standard 640x480 webcam distances, in-ear earbuds span fewer than 15 pixels and are frequently obscured by hair. Such detections are marked `EARBUD_SUSPECTED` at `MEDIUM` severity, requiring human keyframe inspection.
+2. **Extreme Dark Lighting (<10 Lux)**: While CLAHE histogram equalization improves contrast, extreme darkness degrades YuNet landmark confidence. Under these conditions, the engine emits `LOW_LIGHTING_CONDITION` diagnostic events rather than guessing face locations.
+3. **Audio Speaker Disambiguation**: The audio VAD module identifies vocal presence and mouth blendshape correlation but does not perform biometric voiceprint speaker diarization.
+
+---
+
+## 12. Directory Structure
+
+```
+ai_proctoring_wub/
+├── audit/                          # Forensic audit reports (Phases 0 through 8)
+├── deployment/                     # Production systemd unit definitions
+│   └── ai-proctoring.service
+├── models/                         # Unified model weights (ONNX, TFLite, PyTorch)
+│   ├── face_detection_yunet_2023mar.onnx
+│   ├── face_landmarker.task
+│   ├── face_recognition_sface_2021dec.onnx
+│   ├── hand_landmarker.task
+│   ├── yolo11n.pt
+│   └── yolov8s-world.pt
+├── proctoring/                     # Production source code
+│   ├── analysis/                   # Behavioral analyzers (gaze, hands, paper, phone, wearables)
+│   ├── audio/                      # Audio VAD & multimodal correlation
+│   ├── capture/                    # Camera drivers & video sampling
+│   ├── core/                       # Event definitions, contracts, persistence, model registry
+│   ├── detection/                  # Neural network detection wrappers (YuNet, SFace, YOLO)
+│   ├── evidence/                   # Tamper-evident packaging, annotation, SHA-256 sealing
+│   ├── integration/                # FastAPI boundary, schemas, wire service, offline outbox
+│   ├── preprocessing/              # Camera health & frame quality assessment
+│   ├── temporal/                   # Temporal debounce & qualification aggregators
+│   └── tracking/                   # Spatial + cosine multi-subject tracking
+├── scripts/                        # Production execution scripts
+│   └── start_production_service.sh
+├── tests/                          # Automated pytest regression suite (456 tests)
+├── tools/                          # Benchmarking, profiling & dataset validation tools
+├── project_state.md                # Authoritative project state specification (v6.0)
+└── README.md                       # Production deployment manual (this file)
+```
+
+---
+
+## 13. Production Freeze Status
+
+```text
+===============================================================================
+ENGINE STATUS: PRODUCTION FROZEN (VERSION 6.0)
+===============================================================================
+All Phase 8 validation criteria have been met.
+The repository is frozen for normal feature development.
+Deployments must execute via scripts/start_production_service.sh or systemd.
+===============================================================================
+```

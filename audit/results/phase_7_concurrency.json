@@ -1,0 +1,59 @@
+{
+  "timestamp_utc": "2026-09-12T06:36:20Z",
+  "environment": {
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "python": "3.14.4",
+    "cuda_device": "NVIDIA GeForce RTX 3060",
+    "target_device": "cuda"
+  },
+  "concurrency_scaling": [
+    {
+      "num_sessions": 1,
+      "total_frames_processed": 30,
+      "duration_seconds": 2.22,
+      "aggregate_fps": 13.51,
+      "fps_per_session": 13.51,
+      "mean_latency_ms": 45.78,
+      "p50_latency_ms": 44.57,
+      "p90_latency_ms": 50.98,
+      "p95_latency_ms": 53.27,
+      "p99_latency_ms": 62.67,
+      "vram_allocated_mb": 84.32,
+      "vram_reserved_mb": 130.0,
+      "cpu_percent_avg": 0.0,
+      "errors_count": 0
+    },
+    {
+      "num_sessions": 2,
+      "total_frames_processed": 60,
+      "duration_seconds": 2.21,
+      "aggregate_fps": 27.12,
+      "fps_per_session": 13.56,
+      "mean_latency_ms": 50.19,
+      "p50_latency_ms": 48.96,
+      "p90_latency_ms": 53.83,
+      "p95_latency_ms": 56.19,
+      "p99_latency_ms": 73.0,
+      "vram_allocated_mb": 116.32,
+      "vram_reserved_mb": 162.0,
+      "cpu_percent_avg": 79.7,
+      "errors_count": 0
+    },
+    {
+      "num_sessions": 4,
+      "total_frames_processed": 120,
+      "duration_seconds": 2.72,
+      "aggregate_fps": 44.1,
+      "fps_per_session": 11.03,
+      "mean_latency_ms": 63.79,
+      "p50_latency_ms": 61.26,
+      "p90_latency_ms": 73.11,
+      "p95_latency_ms": 79.08,
+      "p99_latency_ms": 114.09,
+      "vram_allocated_mb": 180.32,
+      "vram_reserved_mb": 226.0,
+      "cpu_percent_avg": 77.6,
+      "errors_count": 0
+    }
+  ]
+}

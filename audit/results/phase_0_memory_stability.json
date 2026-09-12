@@ -1,0 +1,35 @@
+{
+  "timestamp_utc": "2026-09-12T04:42:35Z",
+  "total_frames_run": 500,
+  "rss_memory_mb": {
+    "initial_startup": 534.75,
+    "post_model_load": 1687.63,
+    "frame_100": 1750.67,
+    "frame_300": 1751.89,
+    "frame_500": 1752.59,
+    "post_finalization": 1747.28,
+    "post_reset": 1747.28,
+    "growth_during_steady_state_mb": 1.92,
+    "leak_suspected": false
+  },
+  "vram_memory_mb": {
+    "initial_startup": 0.0,
+    "initial_reserved": 0.0,
+    "post_model_load": 67.37,
+    "frame_100": 67.34,
+    "frame_300": 67.34,
+    "frame_500": 52.32,
+    "post_finalization": 52.32,
+    "post_reset": 52.32
+  },
+  "session_finalization": {
+    "duration_ms": 687.13,
+    "total_events_sealed": 1,
+    "integrity_verified": false
+  },
+  "isolation_check": {
+    "engine_active_after_finalization": false,
+    "total_timeline_frames": 500,
+    "sealed_package_exists": true
+  }
+}

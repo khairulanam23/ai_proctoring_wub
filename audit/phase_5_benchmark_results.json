@@ -1,0 +1,75 @@
+{
+  "evaluation_timestamp_utc": "2026-09-12T05:19:57.798771+00:00",
+  "evaluation_scope": "Phase 2\u20135 Materially Modified Components",
+  "hardware_platform": "x86_64 Linux (CPU execution)",
+  "benchmark_iterations": 50,
+  "components": {
+    "MultiSubjectTracker": {
+      "component_name": "MultiSubjectTracker",
+      "operations_measured": 50,
+      "mean_latency_ms": 0.038,
+      "p95_latency_ms": 0.05,
+      "min_latency_ms": 0.031,
+      "max_latency_ms": 0.1,
+      "empirical_behavior": {
+        "tracks_managed": 3,
+        "confirmed_tracks": 3,
+        "stable_ids": [
+          1,
+          2,
+          3
+        ],
+        "association_method": "Spatial IoU + Cosine Distance Embedding Fusion"
+      },
+      "limitations": "Benchmarked with CPU synthetic embedding vectors; real camera streams subject to illumination changes.",
+      "real_world_dataset_status": "UNVERIFIED"
+    },
+    "PhoneHandDisambiguator": {
+      "component_name": "PhoneHandDisambiguator",
+      "operations_measured": 50,
+      "mean_latency_ms": 0.015,
+      "p95_latency_ms": 0.024,
+      "min_latency_ms": 0.012,
+      "max_latency_ms": 0.064,
+      "empirical_behavior": {
+        "total_evaluations": 50,
+        "hand_fp_dismissal_count": 50,
+        "hand_fp_dismissal_rate": 1.0,
+        "temporal_frames_required_for_confirmed": 2
+      },
+      "limitations": "Hand landmarks require MediaPipe; falls back to spatial overlap when landmarks are unavailable.",
+      "real_world_dataset_status": "UNVERIFIED"
+    },
+    "PaperDetector": {
+      "component_name": "PaperDetector",
+      "operations_measured": 50,
+      "mean_latency_ms": 0.536,
+      "p95_latency_ms": 0.549,
+      "min_latency_ms": 0.491,
+      "max_latency_ms": 1.81,
+      "empirical_behavior": {
+        "detection_success_rate": 1.0,
+        "average_detected_count": 1,
+        "aspect_ratio_range": "1.15 - 1.75"
+      },
+      "limitations": "Relies on luminance contrast between desk surface and paper; low contrast desks require contrast enhancement.",
+      "real_world_dataset_status": "UNVERIFIED"
+    },
+    "WearableDetector (Heuristic Discriminator)": {
+      "component_name": "WearableDetector (Heuristic Discriminator)",
+      "operations_measured": 50,
+      "mean_latency_ms": 0.001,
+      "p95_latency_ms": 0.001,
+      "min_latency_ms": 0.0,
+      "max_latency_ms": 0.005,
+      "empirical_behavior": {
+        "earring_suppression_count": 50,
+        "earring_suppression_rate": 1.0,
+        "ear_region_zoom_enabled": true
+      },
+      "limitations": "Open-vocabulary model inference is heavyweight; second-pass zoom requires facial landmark ear bounding boxes.",
+      "real_world_dataset_status": "UNVERIFIED"
+    }
+  },
+  "overall_integrity_statement": "All reported latencies and dismissal rates are empirical wall-clock measurements. No real-world dataset accuracy or precision/recall is fabricated (explicitly marked UNVERIFIED)."
+}
