@@ -98,8 +98,70 @@ class MultiReferenceVerificationResult:
         }
 
 
+class _OpenCVSFaceBackend:
+    """CPU fallback backend using OpenCV cv2.FaceRecognizerSF."""
+
+    def __init__(
+        self,
+        model_path: Path,
+        backend_id: int = cv2.dnn.DNN_BACKEND_OPENCV,
+        target_id: int = cv2.dnn.DNN_TARGET_CPU,
+    ) -> None:
+        self.model_path = model_path
+        self.backend_id = backend_id
+        self.target_id = target_id
+        self.recognizer = cv2.FaceRecognizerSF.create(
+            model=str(self.model_path),
+            config="",
+            backend_id=self.backend_id,
+            target_id=self.target_id,
+        )
+
+    def alignCrop(self, image: np.ndarray, raw_detection: np.ndarray) -> np.ndarray:
+        return self.recognizer.alignCrop(image, raw_detection)
+
+    def feature(self, aligned_face: np.ndarray) -> np.ndarray:
+        return self.recognizer.feature(aligned_face)
+
+
+class _ORTSFaceBackend:
+    """GPU-accelerated SFace backend using ONNX Runtime with CUDAExecutionProvider."""
+
+    def __init__(
+        self,
+        model_path: Path,
+        prefer_cuda: bool = True,
+        device_id: int = 0,
+    ) -> None:
+        from proctoring.core.model_registry import ModelRegistry
+
+        self.model_path = model_path
+        self.session = ModelRegistry.get_ort_session(
+            model_path=model_path,
+            prefer_cuda=prefer_cuda,
+            device_id=device_id,
+        )
+        self._aligner = cv2.FaceRecognizerSF.create(model=str(self.model_path), config="")
+
+    @property
+    def is_cuda(self) -> bool:
+        return bool(self.session.is_cuda)
+
+    def alignCrop(self, image: np.ndarray, raw_detection: np.ndarray) -> np.ndarray:
+        return self._aligner.alignCrop(image, raw_detection)
+
+    def feature(self, aligned_face: np.ndarray) -> np.ndarray:
+        if aligned_face.shape[:2] != (112, 112):
+            aligned_face = cv2.resize(aligned_face, (112, 112))
+        blob = cv2.dnn.blobFromImage(
+            aligned_face, 1.0, (112, 112), (0, 0, 0), swapRB=True, crop=False
+        )
+        outputs = self.session.run(["fc1"], {"data": blob})
+        return outputs[0]
+
+
 class FaceVerifier:
-    """Wrapper for OpenCV SFace Face Recognition and Verification with robust preprocessing and multi-image enrollment."""
+    """Wrapper for OpenCV / ORT SFace Face Recognition and Verification with robust preprocessing."""
 
     # Default calibrated operational threshold
     DEFAULT_COSINE_THRESHOLD = 0.3630
@@ -115,26 +177,68 @@ class FaceVerifier:
         backend_id: int = cv2.dnn.DNN_BACKEND_OPENCV,
         target_id: int = cv2.dnn.DNN_TARGET_CPU,
         device: str | None = None,
+        prefer_cuda: bool = True,
     ) -> None:
         self.recognizer_model_path = Path(recognizer_model_path)
         if not self.recognizer_model_path.exists():
             raise FileNotFoundError(f"SFace model file not found at: {self.recognizer_model_path}")
 
-        self.device = "cpu"
-        if device is not None and device.lower() in ("cuda", "cuda:0", "gpu"):
-            has_cuda = hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0
-            if has_cuda:
-                backend_id = getattr(cv2.dnn, "DNN_BACKEND_CUDA", backend_id)
-                target_id = getattr(cv2.dnn, "DNN_TARGET_CUDA", target_id)
-                self.device = "cuda"
-            else:
-                LOGGER.debug(
-                    "SFace FaceVerifier: OpenCV build lacks CUDA DNN support; running on CPU (MLAS SGEMM)."
-                )
-                self.device = "cpu"
+        wants_cuda = False
+        if device is not None:
+            wants_cuda = device.lower() in ("cuda", "cuda:0", "gpu")
+        elif prefer_cuda:
+            try:
+                import torch
+
+                wants_cuda = torch.cuda.is_available()
+            except ImportError:
+                wants_cuda = False
 
         self.backend_id = backend_id
         self.target_id = target_id
+        self.device = "cpu"
+        self.backend_name = "opencv_cpu"
+        self._backend: _ORTSFaceBackend | _OpenCVSFaceBackend
+
+        if wants_cuda:
+            try:
+                ort_backend = _ORTSFaceBackend(
+                    model_path=self.recognizer_model_path,
+                    prefer_cuda=True,
+                )
+                if ort_backend.is_cuda:
+                    self._backend = ort_backend
+                    self.backend_name = "ort_cuda"
+                    self.device = "cuda:0"
+                    LOGGER.info("SFace FaceVerifier initialized with ORT CUDA backend.")
+                else:
+                    LOGGER.info(
+                        "ORT CUDA not available for SFace; falling back to OpenCV CPU backend."
+                    )
+                    self._backend = _OpenCVSFaceBackend(
+                        model_path=self.recognizer_model_path,
+                        backend_id=self.backend_id,
+                        target_id=self.target_id,
+                    )
+            except Exception as exc:
+                LOGGER.warning(
+                    "Failed to initialize ORT CUDA backend for SFace (%s); falling back to OpenCV CPU.",
+                    exc,
+                )
+                self._backend = _OpenCVSFaceBackend(
+                    model_path=self.recognizer_model_path,
+                    backend_id=self.backend_id,
+                    target_id=self.target_id,
+                )
+        else:
+            self._backend = _OpenCVSFaceBackend(
+                model_path=self.recognizer_model_path,
+                backend_id=self.backend_id,
+                target_id=self.target_id,
+            )
+
+        # Legacy compatibility property/attribute
+        self.recognizer = self._backend
 
         self.detector = detector if detector is not None else FaceDetector(device=device)
         if preprocessor is not None:
@@ -156,13 +260,6 @@ class FaceVerifier:
                 if self.default_metric == "cosine"
                 else self.DEFAULT_L2_THRESHOLD
             )
-
-        self.recognizer = cv2.FaceRecognizerSF.create(
-            model=str(self.recognizer_model_path),
-            config="",
-            backend_id=self.backend_id,
-            target_id=self.target_id,
-        )
 
     @property
     def is_gpu_accelerated(self) -> bool:

@@ -165,7 +165,7 @@ class SessionEvidencePackage:
         total_evidence_bytes = 0
 
         for file_p in sorted(self.package_dir.rglob("*")):
-            if file_p.is_file() and file_p.name != "manifest.json":
+            if file_p.is_file() and file_p.name not in ("manifest.json", "manifest.sha256"):
                 rel_path = file_p.relative_to(self.package_dir).as_posix()
                 sha = self._compute_sha256(file_p)
                 checksums[rel_path] = sha

@@ -49,15 +49,20 @@ class EventType(str, Enum):
     HAND_LIFTED_FROM_PAPER = "HAND_LIFTED_FROM_PAPER"  # Hand lifted vertically away from paper surface
     HAND_LEAVING_WRITING_AREA = "HAND_LEAVING_WRITING_AREA"  # Hand departed designated writing workspace
 
-    # Speech / vocalisation events
+    # Speech / vocalisation / audio events
     CANDIDATE_SPEAKING = "CANDIDATE_SPEAKING"  # Sustained mouth articulation consistent with speech
+    ACOUSTIC_SPEECH_DETECTED = "ACOUSTIC_SPEECH_DETECTED"  # Acoustic voice activity detected from audio stream
+    MULTIPLE_SPEAKERS_DETECTED = "MULTIPLE_SPEAKERS_DETECTED"  # Multiple acoustic voice sources detected
+    MULTIMODAL_SPEECH_CONGRUENT = "MULTIMODAL_SPEECH_CONGRUENT"  # Simultaneous lip articulation and acoustic speech
+    ACOUSTIC_SPEECH_WITHOUT_LIP_MOVEMENT = "ACOUSTIC_SPEECH_WITHOUT_LIP_MOVEMENT"  # Acoustic speech with stationary lips
 
     # Wearable device events
     HEADPHONES_DETECTED = "HEADPHONES_DETECTED"
     EARBUDS_SUSPECTED = "EARBUDS_SUSPECTED"  # Low-confidence by nature - see the accuracy guide
     SMARTWATCH_DETECTED = "SMARTWATCH_DETECTED"
 
-    # System and camera failure diagnostics (NOT candidate misconduct)
+    # System, audio, and camera failure diagnostics (NOT candidate misconduct)
+    AUDIO_DEGRADED = "AUDIO_DEGRADED"  # Audio stream clipped, noisy, or dropped samples
     SYSTEM_ERROR = "SYSTEM_ERROR"
     DETECTOR_ERROR = "DETECTOR_ERROR"
     CAMERA_FRAME_FROZEN = "CAMERA_FRAME_FROZEN"
@@ -96,6 +101,7 @@ class EventCategory(str, Enum):
 # defaults to the category that receives the most scrutiny rather than the least.
 _TECHNICAL_EVENT_TYPES: frozenset = frozenset(
     {
+        EventType.AUDIO_DEGRADED,
         EventType.SYSTEM_ERROR,
         EventType.DETECTOR_ERROR,
         EventType.CAMERA_FRAME_FROZEN,

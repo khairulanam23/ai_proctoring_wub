@@ -16,9 +16,10 @@ from collections import deque
 from typing import Any
 
 from proctoring.analysis.gaze import GazeDirection, GazeObservation
-from proctoring.analysis.hands import HandAnalysisResult
+from proctoring.analysis.hands import HandAnalysisResult, HandState
 from proctoring.analysis.head_movement import HeadMovementPattern, HeadMovementTracker
-from proctoring.analysis.policy import ExamPolicy
+from proctoring.analysis.paper import PaperAnalysisResult, PaperState
+from proctoring.analysis.policy import ExamMode, ExamPolicy
 from proctoring.core.events import EventType
 from proctoring.evidence.annotator import AnnotationContext
 from proctoring.observation import FrameObservation
@@ -235,6 +236,67 @@ class BehaviourObserver:
                 }
 
             self._track_hands_absent(obs, hands, active)
+
+        # 3. Hand kinematics & dynamics observations (writing vs resting)
+        if hands is not None and hands.hands:
+            for h in hands.hands:
+                k_state = getattr(h.kinematics, "state", None) if hasattr(h, "kinematics") else None
+                if k_state == HandState.HAND_WRITING and policy.allows(EventType.HAND_WRITING):
+                    active[EventType.HAND_WRITING] = {
+                        "confidence": 0.85,
+                        "bbox": h.bbox,
+                        "description": "Handwriting motion observed on paper workspace",
+                    }
+                elif k_state == HandState.HAND_RESTING and policy.allows(EventType.HAND_RESTING):
+                    active[EventType.HAND_RESTING] = {
+                        "confidence": 0.90,
+                        "bbox": h.bbox,
+                        "description": "Hand resting stationary in workspace",
+                    }
+                elif k_state == HandState.HAND_LIFTED_FROM_PAPER and policy.allows(EventType.HAND_LIFTED_FROM_PAPER):
+                    active[EventType.HAND_LIFTED_FROM_PAPER] = {
+                        "confidence": 0.80,
+                        "bbox": h.bbox,
+                        "description": "Hand lifted abruptly from paper surface",
+                    }
+                elif k_state == HandState.HAND_LEAVING_WRITING_AREA and policy.allows(EventType.HAND_LEAVING_WRITING_AREA):
+                    active[EventType.HAND_LEAVING_WRITING_AREA] = {
+                        "confidence": 0.80,
+                        "bbox": h.bbox,
+                        "description": "Hand leaving designated writing workspace",
+                    }
+
+        # 4. Physical paper detection and manipulation observations
+        paper = obs.paper_analysis
+        if paper is not None:
+            if paper.paper_present and policy.allows(EventType.PAPER_PRESENT):
+                sheet_box = paper.sheets[0].bbox if paper.sheets else None
+                active[EventType.PAPER_PRESENT] = {
+                    "confidence": float(paper.sheets[0].confidence) if paper.sheets else 0.8,
+                    "bbox": sheet_box,
+                    "description": f"Physical paper present on desk workspace ({paper.paper_count} sheet(s) detected)",
+                }
+            elif not paper.paper_present and policy.mode == ExamMode.PHYSICAL_PAPER and policy.allows(EventType.PAPER_ABSENT):
+                active[EventType.PAPER_ABSENT] = {
+                    "confidence": 0.85,
+                    "description": "Required physical paper absent from designated workspace",
+                }
+
+            if paper.paper_count > 1 and policy.allows(EventType.MULTIPLE_PAPERS_DETECTED):
+                sheet_box = paper.sheets[0].bbox if paper.sheets else None
+                active[EventType.MULTIPLE_PAPERS_DETECTED] = {
+                    "confidence": float(paper.sheets[0].confidence) if paper.sheets else 0.8,
+                    "bbox": sheet_box,
+                    "description": f"Multiple paper sheets detected in workspace ({paper.paper_count} sheets)",
+                }
+
+            if paper.manipulation_detected and policy.allows(EventType.PAPER_MANIPULATED):
+                sheet_box = paper.sheets[0].bbox if paper.sheets else None
+                active[EventType.PAPER_MANIPULATED] = {
+                    "confidence": 0.85,
+                    "bbox": sheet_box,
+                    "description": f"Physical paper manipulation or displacement observed ({paper.displacement_px:.1f}px shift)",
+                }
 
         self._confirm_wearables(obs, hands, active, policy)
 
@@ -523,6 +585,10 @@ class BehaviourObserver:
             measurements["hands"] = hands.hands_detected
         if obs.similarity is not None:
             measurements["identity sim"] = obs.similarity
+        if obs.paper_analysis is not None:
+            measurements["paper"] = obs.paper_analysis.paper_count
+            if obs.paper_analysis.manipulation_detected:
+                measurements["paper shift"] = f"{obs.paper_analysis.displacement_px:.1f}px"
 
         return AnnotationContext(
             face_boxes=[_to_xyxy(b) for b in obs.face_boxes],

@@ -58,6 +58,22 @@ class AnnotatedBBox:
         )
 
 
+YOLO_LABEL_MAP: dict[TargetObjectLabel, int] = {
+    TargetObjectLabel.PHONE: 0,
+    TargetObjectLabel.EARBUD: 1,
+    TargetObjectLabel.OVER_EAR_HEADPHONE: 2,
+    TargetObjectLabel.PAPER: 3,
+    TargetObjectLabel.TABLET: 4,
+    TargetObjectLabel.LAPTOP: 5,
+    TargetObjectLabel.BOOK: 6,
+}
+
+
+def get_yolo_class_names() -> dict[int, str]:
+    """Return map of class ID to class string name for dataset YAML configs."""
+    return {idx: label.value for label, idx in YOLO_LABEL_MAP.items()}
+
+
 @dataclass
 class HumanAnnotationRecord:
     """Authoritative human ground truth for a training sample."""
@@ -104,20 +120,9 @@ class HumanAnnotationRecord:
     def to_yolo_format(self, img_width: int, img_height: int) -> list[str]:
         """Convert bounding boxes to standard YOLO normalized txt lines: class_id cx cy w h."""
         lines: list[str] = []
-        # Class index map
-        label_map = {
-            TargetObjectLabel.PHONE: 0,
-            TargetObjectLabel.EARBUD: 1,
-            TargetObjectLabel.OVER_EAR_HEADPHONE: 2,
-            TargetObjectLabel.PAPER: 3,
-            TargetObjectLabel.TABLET: 4,
-            TargetObjectLabel.LAPTOP: 5,
-            TargetObjectLabel.BOOK: 6,
-        }
-
         for obj in self.objects:
-            if obj.label in label_map and not obj.is_hard_negative:
-                cid = label_map[obj.label]
+            if obj.label in YOLO_LABEL_MAP and not obj.is_hard_negative:
+                cid = YOLO_LABEL_MAP[obj.label]
                 x1, y1, x2, y2 = obj.bbox
                 cx = ((x1 + x2) / 2.0) / max(1, img_width)
                 cy = ((y1 + y2) / 2.0) / max(1, img_height)

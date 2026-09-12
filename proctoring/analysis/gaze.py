@@ -130,10 +130,11 @@ class GazeTracker:
         self._current_direction: GazeDirection = GazeDirection.CENTER
 
     def reset(self) -> None:
-        """Reset temporal smoothing filter and directional hysteresis state."""
+        """Reset temporal smoothing filter, directional hysteresis state, and calibration."""
         self._smoothed_h = None
         self._smoothed_v = None
         self._current_direction = GazeDirection.CENTER
+        self.calibration = GazeCalibration()
 
     def calibrate(self, raw_samples: list[tuple[float, float]]) -> dict[str, Any]:
         """Learn neutral baseline gaze from collected (horizontal, vertical) sample pairs."""

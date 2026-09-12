@@ -24,7 +24,9 @@ class PhoneClassification(str, Enum):
     """Categorization of phone detection candidate."""
 
     CONFIRMED_PHONE = "confirmed_phone"
+    POSSIBLE_PHONE = "possible_phone"
     UNCERTAIN_CANDIDATE = "phone_candidate_uncertain"
+    HAND_OBJECT_AMBIGUITY = "hand_object_ambiguity"
     HAND_FALSE_POSITIVE = "hand_false_positive"
     DISMISSED = "dismissed"
 
@@ -111,21 +113,7 @@ class PhoneHandDisambiguator:
                 bbox=bbox,
             )
 
-        # 2. Aspect ratio check
-        # Phones are rectangular slabs (~16:9 to 21:9, ratio ~1.6 - 2.3).
-        # An almost square box (< 1.20) or hyper-elongated (> 3.2) is suspicious.
-        aspect_ok = self.min_phone_aspect_ratio <= aspect_ratio <= self.max_phone_aspect_ratio
-        if not aspect_ok and raw_conf < 0.70:
-            return PhoneDisambiguationResult(
-                classification=PhoneClassification.UNCERTAIN_CANDIDATE,
-                confidence=raw_conf * 0.6,
-                raw_confidence=raw_conf,
-                reason=f"Irregular aspect ratio ({aspect_ratio:.2f}) for standard smartphone",
-                aspect_ratio=aspect_ratio,
-                bbox=bbox,
-            )
-
-        # 3. Spatial interaction with hand landmarks
+        # 2. Spatial interaction with hand landmarks
         max_iou = 0.0
         is_gripping = False
         empty_hand_false_positive = False
@@ -145,23 +133,49 @@ class PhoneHandDisambiguator:
                         empty_hand_false_positive = True
 
         # If box is almost entirely inside an empty hand with marginal confidence -> False Positive
-        if empty_hand_false_positive and max_iou > self.hand_overlap_threshold and raw_conf < 0.65:
+        if empty_hand_false_positive:
+            if max_iou > self.hand_overlap_threshold and raw_conf < 0.60:
+                return PhoneDisambiguationResult(
+                    classification=PhoneClassification.HAND_FALSE_POSITIVE,
+                    confidence=raw_conf * 0.3,
+                    raw_confidence=raw_conf,
+                    reason=f"Detection aligns with empty hand geometry without physical phone contrast (IoU {max_iou:.2f})",
+                    aspect_ratio=aspect_ratio,
+                    hand_iou=max_iou,
+                    hand_gripping=False,
+                    bbox=bbox,
+                )
+            elif max_iou > 0.35 and raw_conf < 0.75:
+                return PhoneDisambiguationResult(
+                    classification=PhoneClassification.HAND_OBJECT_AMBIGUITY,
+                    confidence=raw_conf * 0.5,
+                    raw_confidence=raw_conf,
+                    reason=f"Ambiguous hand-object overlap without definitive device contrast (IoU {max_iou:.2f})",
+                    aspect_ratio=aspect_ratio,
+                    hand_iou=max_iou,
+                    hand_gripping=False,
+                    bbox=bbox,
+                )
+
+        # 3. Aspect ratio check
+        # Phones are rectangular slabs (~16:9 to 21:9, ratio ~1.6 - 2.3).
+        # An almost square box (< 1.20) or hyper-elongated (> 3.2) is suspicious.
+        aspect_ok = self.min_phone_aspect_ratio <= aspect_ratio <= self.max_phone_aspect_ratio
+        if not aspect_ok and raw_conf < 0.70:
             return PhoneDisambiguationResult(
-                classification=PhoneClassification.HAND_FALSE_POSITIVE,
-                confidence=raw_conf * 0.3,
+                classification=PhoneClassification.UNCERTAIN_CANDIDATE,
+                confidence=raw_conf * 0.6,
                 raw_confidence=raw_conf,
-                reason=f"Detection aligns with empty hand geometry without physical phone contrast (IoU {max_iou:.2f})",
+                reason=f"Irregular aspect ratio ({aspect_ratio:.2f}) for standard smartphone",
                 aspect_ratio=aspect_ratio,
-                hand_iou=max_iou,
-                hand_gripping=False,
                 bbox=bbox,
             )
 
         # 4. Temporal confirmation tracking
         confs = self._update_temporal_track(bbox, frame_index)
 
-        # If hand is gripping an object or aspect ratio is standard
-        if is_gripping or confs >= self.min_temporal_frames or raw_conf >= 0.75:
+        # If hand is gripping an object or confirmed over multiple frames
+        if is_gripping or confs >= self.min_temporal_frames:
             return PhoneDisambiguationResult(
                 classification=PhoneClassification.CONFIRMED_PHONE,
                 confidence=min(1.0, raw_conf * (1.1 if is_gripping else 1.0)),
@@ -178,7 +192,21 @@ class PhoneHandDisambiguator:
                 bbox=bbox,
             )
 
-        # Otherwise marginal single-frame detection
+        # Single-frame candidate with valid aspect ratio -> POSSIBLE_PHONE
+        if aspect_ok and raw_conf >= 0.50:
+            return PhoneDisambiguationResult(
+                classification=PhoneClassification.POSSIBLE_PHONE,
+                confidence=raw_conf * 0.85,
+                raw_confidence=raw_conf,
+                reason="Single-frame phone candidate with standard rectangular geometry awaiting temporal confirmation",
+                aspect_ratio=aspect_ratio,
+                hand_iou=max_iou,
+                hand_gripping=is_gripping,
+                temporal_confirmations=confs,
+                bbox=bbox,
+            )
+
+        # Otherwise marginal candidate
         return PhoneDisambiguationResult(
             classification=PhoneClassification.UNCERTAIN_CANDIDATE,
             confidence=raw_conf,

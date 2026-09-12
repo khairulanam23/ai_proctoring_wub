@@ -20,6 +20,15 @@ from proctoring.analysis.occlusion import FaceOcclusionClassifier
 from proctoring.analysis.paper import PaperDetector
 from proctoring.analysis.policy import ExamPolicy
 from proctoring.analysis.wearables import WearableAnalysisResult, WearableDetector
+from proctoring.audio import (
+    AudioAnalyzer,
+    AudioChunk,
+    AudioObservation,
+    AudioStatus,
+    MultimodalCorrelator,
+    MultimodalObservation,
+    MultimodalState,
+)
 from proctoring.config import SessionConfig
 from proctoring.core.errors import ErrorCategory, PipelineErrorHandler
 from proctoring.detection.face_detector import DetectionResult, FaceDetection, FaceDetector
@@ -28,6 +37,7 @@ from proctoring.detection.object_detector import ObjectDetectionResult, ObjectDe
 from proctoring.detection.object_relevance import ObjectRelevanceFilter
 from proctoring.observation import FaceStatus, FrameObservation
 from proctoring.telemetry.performance import FrameTimingRecord
+from proctoring.tracking import MultiSubjectTracker
 
 LOGGER = logging.getLogger(__name__)
 
@@ -114,6 +124,11 @@ class StageCoordinator:
 
         self.occlusion_classifier = FaceOcclusionClassifier()
         self.paper_detector = PaperDetector()
+        self.tracker = MultiSubjectTracker(
+            face_match_threshold=self.config.face_match_threshold,
+        )
+        self.audio_analyzer = AudioAnalyzer()
+        self.multimodal_correlator = MultimodalCorrelator()
 
         self._last_wearable_result: WearableAnalysisResult | None = None
         self._last_wearable_timestamp: float | None = None
@@ -150,8 +165,17 @@ class StageCoordinator:
         """Reset internal per-session tracking state."""
         self._last_wearable_result = None
         self._last_wearable_timestamp = None
+        self.tracker.reset()
+        self.audio_analyzer.reset()
+        self.multimodal_correlator.reset()
         if self.facial_dynamics is not None:
             self.facial_dynamics.reset()
+        if self.hand_analyzer is not None:
+            self.hand_analyzer.reset()
+        if self.paper_detector is not None:
+            self.paper_detector.reset()
+        if self.wearable_detector is not None and hasattr(self.wearable_detector, "reset"):
+            self.wearable_detector.reset()
 
     # ------------------------------------------------------------------
     # Stage 4: Face Detection
@@ -234,19 +258,42 @@ class StageCoordinator:
 
         if not can_verify:
             obs.face_status = FaceStatus.MULTIPLE_FACES if len(faces) > 1 else FaceStatus.UNVERIFIED
+            obs.tracked_subjects = self.tracker.update_faces(
+                faces=faces,
+                timestamp=timestamp_seconds,
+                frame_index=frame_index,
+            )
             return
 
+        t_embed_start = time.perf_counter()
         scores: list[float | None] = []
+        embeddings: list[np.ndarray | None] = []
         for face in faces:
-            scores.append(
-                self.score_face(
-                    frame, face, templates, timestamp_seconds, frame_index, timing, per_model_times
+            emb = self.extract_embedding(frame, face)
+            embeddings.append(emb)
+            if emb is not None:
+                sim = max(
+                    float(self.face_verifier.compute_similarity(emb, t)) for t in templates
                 )
-            )
+                scores.append(sim)
+            else:
+                scores.append(None)
+
+        elapsed_embed = (time.perf_counter() - t_embed_start) * 1000.0
+        timing.face_embedder_ms += elapsed_embed
+        per_model_times["face_embedder"] = timing.face_embedder_ms
 
         measured = [s for s in scores if s is not None]
         obs.face_similarities = scores
         obs.similarity = max(measured) if measured else None
+
+        obs.tracked_subjects = self.tracker.update_faces(
+            faces=faces,
+            embeddings=embeddings,
+            similarities=scores,
+            timestamp=timestamp_seconds,
+            frame_index=frame_index,
+        )
 
         if not measured:
             obs.face_status = FaceStatus.MULTIPLE_FACES if len(faces) > 1 else FaceStatus.UNVERIFIED
@@ -312,10 +359,14 @@ class StageCoordinator:
         """Obtain an SFace embedding, tolerating either verifier API shape."""
         if self.face_verifier is None:
             return None
-        if hasattr(self.face_verifier, "extract_embedding"):
-            return self.face_verifier.extract_embedding(frame, raw_detection=face.raw_detection)
-        if hasattr(self.face_verifier, "extract_feature"):
-            return self.face_verifier.extract_feature(frame, face=face)
+        try:
+            if hasattr(self.face_verifier, "extract_embedding"):
+                return self.face_verifier.extract_embedding(frame, raw_detection=face.raw_detection)
+            if hasattr(self.face_verifier, "extract_feature"):
+                return self.face_verifier.extract_feature(frame, face=face)
+        except Exception as exc:
+            LOGGER.warning("Face embedding extraction failed: %s", exc)
+            return None
         return None
 
     # ------------------------------------------------------------------
@@ -425,7 +476,7 @@ class StageCoordinator:
                 blur_variance=obs.blur_variance,
             )
         except Exception as exc:
-            LOGGER.debug("Occlusion classification failed at frame %s: %s", obs.frame_index, exc)
+            self.record_analyzer_failure(exc, "occlusion_classifier", obs)
 
         # 4. Worn devices on a decimated cadence
         if (
@@ -466,9 +517,69 @@ class StageCoordinator:
             obs.paper_analysis = self.paper_detector.detect(frame, frame_index=obs.frame_index)
             per_model_times["paper_detector"] = obs.paper_analysis.inference_ms
         except Exception as exc:
-            LOGGER.debug("Paper detection failed at frame %s: %s", obs.frame_index, exc)
+            self.record_analyzer_failure(exc, "paper_detector", obs)
+
+        # 6. Hand tracking and subject association
+        try:
+            hand_boxes: list[tuple[int, int, int, int]] = []
+            hand_states: list[str] = []
+            if obs.hand_analysis is not None and getattr(obs.hand_analysis, "hands", None):
+                for h in obs.hand_analysis.hands:
+                    if hasattr(h, "bbox") and h.bbox:
+                        hand_boxes.append(h.bbox)
+                        hand_states.append(getattr(h, "state", "unknown"))
+            obs.tracked_hands = self.tracker.update_hands(
+                hand_bboxes=hand_boxes,
+                timestamp=obs.timestamp_seconds,
+                frame_index=obs.frame_index,
+                subjects=obs.tracked_subjects,
+                states=hand_states,
+            )
+        except Exception as exc:
+            LOGGER.debug("Hand tracking update failed: %s", exc)
 
         timing.behaviour_analysis_ms = (time.perf_counter() - behaviour_start) * 1000.0
+
+    def analyze_audio_and_multimodal(
+        self,
+        obs: FrameObservation,
+        audio_chunk: AudioChunk | np.ndarray | None,
+        timing: FrameTimingRecord,
+        per_model_times: dict[str, float],
+    ) -> None:
+        """Stage 6c — Analyze audio stream and synthesize multimodal observations."""
+        t0 = time.perf_counter()
+        try:
+            obs.audio_observation = self.audio_analyzer.analyze(
+                chunk=audio_chunk,
+                timestamp_seconds=obs.timestamp_seconds,
+            )
+            obs.multimodal_observation = self.multimodal_correlator.correlate(
+                timestamp_seconds=obs.timestamp_seconds,
+                facial_dynamics=obs.facial_dynamics,
+                audio_observation=obs.audio_observation,
+                face_count=obs.face_count or 1,
+            )
+        except Exception as exc:
+            self.record_analyzer_failure(exc, "audio_and_multimodal", obs)
+            obs.audio_observation = AudioObservation(
+                timestamp_seconds=obs.timestamp_seconds,
+                status=AudioStatus.FAILED,
+                technical_notes=f"Audio processing fault: {exc}",
+            )
+            obs.multimodal_observation = MultimodalObservation(
+                timestamp_seconds=obs.timestamp_seconds,
+                state=MultimodalState.AUDIO_DISABLED,
+                visual_speech_detected=bool(obs.facial_dynamics and obs.facial_dynamics.speaking),
+                acoustic_speech_detected=False,
+                multiple_speakers_detected=False,
+                multiple_faces_detected=(obs.face_count or 1) >= 2,
+                correlation_confidence=0.0,
+                human_review_notes=f"Degraded due to audio fault: {exc}",
+            )
+
+        dt = (time.perf_counter() - t0) * 1000.0
+        per_model_times["audio_and_multimodal"] = dt
 
     @property
     def wearable_carry_forward_seconds(self) -> float:

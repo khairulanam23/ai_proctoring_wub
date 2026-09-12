@@ -370,7 +370,7 @@ class FacialDynamicsAnalyzer:
             self.gaze_tracker.calibrate(gaze_pairs)
 
         self.is_calibrated = True
-        self.reset()
+        self.reset(clear_calibration=False)
 
         return {
             "calibrated": True,
@@ -384,13 +384,20 @@ class FacialDynamicsAnalyzer:
             "pitch_stability_deg": round(pitch_spread, 2),
         }
 
-    def reset(self) -> None:
-        """Clear all per-session state (speech history and liveness counters)."""
+    def reset(self, clear_calibration: bool = True) -> None:
+        """Clear per-session state (speech history, liveness counters, and calibration)."""
         self._mouth_history.clear()
         self._blink_count = 0
         self._eye_was_closed = False
         self._face_first_seen = None
         self._face_last_seen = None
+        if clear_calibration:
+            self.baseline_yaw = 0.0
+            self.baseline_pitch = 0.0
+            self.baseline_gaze = 0.0
+            self.is_calibrated = False
+            if hasattr(self, "gaze_tracker") and self.gaze_tracker is not None:
+                self.gaze_tracker.reset()
 
     # ------------------------------------------------------------------
     # Per-frame analysis

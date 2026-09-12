@@ -45,6 +45,8 @@ class ActiveIncident:
     detail_description: str | None = None
     correlations: list[dict[str, Any]] = field(default_factory=list)
     status: EventStatus = EventStatus.OPEN
+    associated_subject_id: int | None = None
+    interaction_type: str | None = None
 
     def add_observation(
         self,
@@ -179,6 +181,7 @@ class UnifiedTemporalAggregator:
         bboxes: list[tuple[int, int, int, int]] | None = None,
         confidences: list[float] | None = None,
         enrolled_present: bool | None = None,
+        tracked_subjects: list[Any] | None = None,
     ) -> None:
         """Process face presence and identity observations for a frame.
 
@@ -219,6 +222,18 @@ class UnifiedTemporalAggregator:
 
         primary_confidence = confidences[0] if (confidences and len(confidences) > 0) else 1.0
         primary_bbox = bboxes[0] if (bboxes and len(bboxes) > 0) else None
+
+        if tracked_subjects:
+            enrolled = [s for s in tracked_subjects if getattr(s, "is_enrolled", False)]
+            if enrolled:
+                primary_confidence = getattr(enrolled[0], "confidence", primary_confidence)
+                primary_bbox = getattr(enrolled[0], "bbox", primary_bbox)
+                if getattr(enrolled[0], "similarity_score", None) is not None:
+                    similarity_score = enrolled[0].similarity_score
+            elif tracked_subjects:
+                best_s = max(tracked_subjects, key=lambda s: getattr(s, "confidence", 0.0))
+                primary_confidence = getattr(best_s, "confidence", primary_confidence)
+                primary_bbox = getattr(best_s, "bbox", primary_bbox)
 
         # Check all face incident keys
         face_event_types = {EventType.NO_FACE, EventType.MULTIPLE_FACES, EventType.UNKNOWN_FACE}
@@ -296,6 +311,7 @@ class UnifiedTemporalAggregator:
         detector: DetectorInfo,
         blur_variance: float | None = None,
         hand_analysis: Any = None,
+        tracked_objects: list[Any] | None = None,
     ) -> None:
         """Process detected objects for a frame using IoU spatial persistence."""
         seen_keys: set[str] = set()
@@ -319,7 +335,10 @@ class UnifiedTemporalAggregator:
                 if dis.classification == PhoneClassification.HAND_FALSE_POSITIVE:
                     LOGGER.debug("Dismissed phone candidate as hand false positive: %s", dis.reason)
                     continue
-                elif dis.classification == PhoneClassification.UNCERTAIN_CANDIDATE:
+                elif dis.classification in (
+                    PhoneClassification.UNCERTAIN_CANDIDATE,
+                    PhoneClassification.HAND_OBJECT_AMBIGUITY,
+                ):
                     event_type = EventType.PHONE_CANDIDATE_UNCERTAIN
                     c_name = "phone_candidate_uncertain"
                     conf = dis.confidence
@@ -364,8 +383,20 @@ class UnifiedTemporalAggregator:
                     required_duration=required_dur,
                 )
             else:
+                assoc_subj_id = None
+                interaction = "unassociated"
+                if tracked_objects and bbox is not None:
+                    for to in tracked_objects:
+                        to_bbox = getattr(to, "bbox", None)
+                        if getattr(to, "class_name", "").lower() == c_name and self._box_iou(bbox, to_bbox) >= 0.20:
+                            assoc_subj_id = getattr(to, "associated_subject_id", None)
+                            interaction = getattr(to, "interaction_type", "unassociated")
+                            break
+
                 key = f"object_{c_name}"
-                if key in self.active_incidents:
+                if assoc_subj_id is not None and assoc_subj_id > 1:
+                    key = f"object_{c_name}_subj_{assoc_subj_id}"
+                elif key in self.active_incidents:
                     # Disambiguate multiple instances of same class
                     key = f"object_{c_name}_{frame_index}"
 
@@ -382,6 +413,8 @@ class UnifiedTemporalAggregator:
                     best_confidence=conf,
                     best_frame_index=frame_index,
                     best_timestamp=timestamp,
+                    associated_subject_id=assoc_subj_id,
+                    interaction_type=interaction,
                 )
                 incident.add_observation(
                     timestamp=timestamp,

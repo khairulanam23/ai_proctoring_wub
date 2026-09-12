@@ -413,6 +413,24 @@ class ExamPolicy:
             policy.pitch_down_limit_degrees = 60.0
             policy.gaze_vertical_down_limit = 0.70
             policy.yaw_limit_degrees = max(policy.yaw_limit_degrees, 38.0)
+            policy.enabled_events = policy.enabled_events | {
+                EventType.PAPER_PRESENT,
+                EventType.PAPER_MANIPULATED,
+                EventType.MULTIPLE_PAPERS_DETECTED,
+                EventType.HAND_WRITING,
+                EventType.HAND_RESTING,
+                EventType.HAND_LIFTED_FROM_PAPER,
+                EventType.HAND_LEAVING_WRITING_AREA,
+                EventType.PAPER_ABSENT,
+            }
+            policy.event_min_duration.setdefault(EventType.PAPER_PRESENT, 1.0)
+            policy.event_min_duration.setdefault(EventType.PAPER_MANIPULATED, 0.5)
+            policy.event_min_duration.setdefault(EventType.MULTIPLE_PAPERS_DETECTED, 1.0)
+            policy.event_min_duration.setdefault(EventType.HAND_WRITING, 1.5)
+            policy.event_min_duration.setdefault(EventType.HAND_RESTING, 3.0)
+            policy.event_min_duration.setdefault(EventType.HAND_LIFTED_FROM_PAPER, 1.0)
+            policy.event_min_duration.setdefault(EventType.HAND_LEAVING_WRITING_AREA, 1.0)
+            policy.event_min_duration.setdefault(EventType.PAPER_ABSENT, 2.0)
             if EventType.LOOKING_AWAY in policy.event_min_duration:
                 policy.event_min_duration[EventType.LOOKING_AWAY] = max(
                     policy.event_min_duration[EventType.LOOKING_AWAY], 3.5

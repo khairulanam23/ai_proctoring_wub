@@ -7,6 +7,7 @@ train and test).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -17,7 +18,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from proctoring.learning.annotations import HumanAnnotationRecord, ReviewStatus
+import cv2
+
+from proctoring.learning.annotations import (
+    HumanAnnotationRecord,
+    ReviewStatus,
+    get_yolo_class_names,
+)
 from proctoring.learning.inbox import InboxSample
 
 LOGGER = logging.getLogger(__name__)
@@ -94,6 +101,8 @@ class DatasetManager:
         split_ratio: tuple[float, float, float] = (0.70, 0.15, 0.15),
         seed: int = 42,
         notes: str = "",
+        inbox_base_dir: str | Path | None = None,
+        export_assets: bool = True,
     ) -> DatasetManifest:
         """Create a new versioned dataset with session-grouped train/val/test splits."""
         dataset_id = f"dataset_{version.replace('.', '_')}"
@@ -142,6 +151,10 @@ class DatasetManager:
         hard_negatives = 0
         classes_set: set[str] = set()
 
+        # Compute provenance hash over sample IDs and split assignment
+        hasher = hashlib.sha256()
+        hasher.update(f"{dataset_id}:{version}".encode("utf-8"))
+
         for s in verified_samples:
             if s.session_id in train_sessions:
                 split = "train"
@@ -157,6 +170,53 @@ class DatasetManager:
                 if obj.is_hard_negative:
                     hard_negatives += 1
 
+            hasher.update(f"{s.sample_id}:{split}".encode("utf-8"))
+
+            if export_assets:
+                # Find source image
+                src_img_path: Path | None = None
+                if inbox_base_dir:
+                    candidate_path = Path(inbox_base_dir) / s.image_rel_path
+                    if candidate_path.exists():
+                        src_img_path = candidate_path
+                if not src_img_path:
+                    cand = Path(s.image_rel_path)
+                    if cand.exists():
+                        src_img_path = cand
+                    elif (Path("training/inbox") / s.image_rel_path).exists():
+                        src_img_path = Path("training/inbox") / s.image_rel_path
+
+                img_w, img_h = 640, 640
+                dest_img_path = dataset_dir / split / "images" / f"{s.sample_id}.jpg"
+                if src_img_path and src_img_path.exists():
+                    shutil.copy2(src_img_path, dest_img_path)
+                    im = cv2.imread(str(src_img_path))
+                    if im is not None:
+                        img_h, img_w = im.shape[:2]
+
+                # Write YOLO label file
+                yolo_lines = ann.to_yolo_format(img_width=img_w, img_height=img_h)
+                dest_label_path = dataset_dir / split / "labels" / f"{s.sample_id}.txt"
+                dest_label_path.write_text("\n".join(yolo_lines) + ("\n" if yolo_lines else ""), encoding="utf-8")
+
+        # Generate standard data.yaml
+        yaml_content = [
+            f"# Proctoring Dataset {version}",
+            f"path: {dataset_dir.resolve()}",
+            "train: train/images",
+            "val: val/images",
+            "test: test/images",
+            "",
+            "names:",
+        ]
+        class_names = get_yolo_class_names()
+        for idx in sorted(class_names.keys()):
+            yaml_content.append(f"  {idx}: {class_names[idx]}")
+        yaml_content.append("")
+        (dataset_dir / "data.yaml").write_text("\n".join(yaml_content), encoding="utf-8")
+
+        provenance_hash = hasher.hexdigest()
+
         manifest = DatasetManifest(
             dataset_id=dataset_id,
             version=version,
@@ -167,6 +227,7 @@ class DatasetManager:
             test_count=counts["test"],
             hard_negatives_count=hard_negatives,
             session_ids=all_sessions,
+            provenance_hash=provenance_hash,
             notes=notes,
         )
 
@@ -175,10 +236,11 @@ class DatasetManager:
             f.write(json.dumps(manifest.to_dict(), indent=2))
 
         LOGGER.info(
-            "Created versioned dataset %s: %d samples across %d sessions",
+            "Created versioned dataset %s: %d samples across %d sessions (hash: %s)",
             version,
             len(verified_samples),
             len(all_sessions),
+            provenance_hash[:12],
         )
         return manifest
 

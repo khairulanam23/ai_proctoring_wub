@@ -196,6 +196,18 @@ class SessionConfig:
     create_zip: bool = False
     record_timeline: bool = True
 
+    # ------------------------------------------------------------------
+    # Hardware acceleration & runtime device
+    # ------------------------------------------------------------------
+    device: str = "cuda"
+    """Target device for model inference: 'cuda', 'cuda:0', or 'cpu'."""
+
+    cuda_device_index: int = 0
+    """CUDA GPU ordinal if device is 'cuda'."""
+
+    prefer_gpu_backends: bool = True
+    """Whether to prefer GPU backends (ORT CUDA for YuNet/SFace, PyTorch CUDA for YOLO)."""
+
     def __post_init__(self) -> None:
         # Guard against configurations that would silently disable qualification
         # or produce divide-by-zero timestamps downstream.
