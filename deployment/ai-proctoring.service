@@ -1,0 +1,34 @@
+[Unit]
+Description=AI Proctoring Engine Background Service
+After=network.target nvidia-persistenced.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=phant0m
+Group=phant0m
+WorkingDirectory=/home/phant0m/Phantom/ai_proctoring_wub
+Environment="PATH=/home/phant0m/Phantom/ai_proctoring_wub/.venv/bin:/usr/local/cuda/bin:/usr/bin"
+Environment="CUDA_VISIBLE_DEVICES=0"
+Environment="AI_HOST=127.0.0.1"
+Environment="AI_PORT=7001"
+Environment="AI_WORKERS=1"
+Environment="PYTHONUNBUFFERED=1"
+
+ExecStart=/home/phant0m/Phantom/ai_proctoring_wub/scripts/start_production_service.sh
+
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Resource limits and process isolation
+LimitNOFILE=65536
+LimitNPROC=4096
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-proctoring-engine
+
+[Install]
+WantedBy=multi-user.target
