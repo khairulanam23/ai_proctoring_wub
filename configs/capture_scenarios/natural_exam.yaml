@@ -1,0 +1,65 @@
+scenario_id: natural_exam
+name: Natural Examination & Candidate Behavior Capture
+description: >
+  Unscripted, realistic candidate behavior during an online exam session:
+  screen reading, downward gaze, typing, posture shifts, natural blinking, and subtle fidgeting.
+version: "1.0"
+default_preparation_seconds: 5
+default_recording_seconds: 15
+
+steps:
+  - step_id: screen_reading_focused
+    instruction: "Read the text on your screen attentively, moving your eyes across lines as if reading an exam question."
+    instructed_condition: "reading_screen_focused_gaze"
+    preparation_seconds: 4
+    recording_seconds: 15
+    notes: "Normal front-facing reading gaze micro-saccades."
+
+  - step_id: downward_gaze_desk
+    instruction: "Look down toward your desk or keyboard, as if reading rough notes or scratchpad."
+    instructed_condition: "downward_gaze_reading"
+    preparation_seconds: 4
+    recording_seconds: 12
+    notes: "Downward vertical gaze angle without head dropping drastically."
+
+  - step_id: keyboard_typing_natural
+    instruction: "Type naturally on your keyboard, occasionally glancing between keyboard and screen."
+    instructed_condition: "natural_typing_behavior"
+    preparation_seconds: 4
+    recording_seconds: 15
+    notes: "Natural typing rhythm and periodic gaze shifts."
+
+  - step_id: thinking_looking_aside
+    instruction: "Pause as if thinking about a difficult question, briefly glancing upward or slightly to the side."
+    instructed_condition: "natural_thinking_look_away"
+    preparation_seconds: 4
+    recording_seconds: 10
+    notes: "Brief (<3 sec) natural off-screen glance."
+
+  - step_id: posture_adjustment
+    instruction: "Shift your seating posture slightly (lean back slightly, then settle back into comfortable sitting)."
+    instructed_condition: "natural_posture_shift"
+    preparation_seconds: 4
+    recording_seconds: 10
+    notes: "Gradual body displacement without leaving frame."
+
+  - step_id: face_touching_chin_rest
+    instruction: "Rest your chin on your palm or touch your cheek thoughtfully while reading."
+    instructed_condition: "natural_chin_rest_hand_face"
+    preparation_seconds: 4
+    recording_seconds: 10
+    notes: "Partial lower-face resting hand contact."
+
+  - step_id: stretch_and_blink
+    instruction: "Blink naturally, stretch your neck or shoulders gently, and take a deep breath."
+    instructed_condition: "natural_stretch_relaxation"
+    preparation_seconds: 4
+    recording_seconds: 10
+    notes: "Natural physiological relaxation during extended exams."
+
+  - step_id: natural_exam_complete
+    instruction: "Natural examination scenario completed. Thank you."
+    instructed_condition: "neutral_end"
+    preparation_seconds: 2
+    recording_seconds: 5
+    notes: "Session conclusion."

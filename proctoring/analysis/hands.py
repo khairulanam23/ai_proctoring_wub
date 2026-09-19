@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
 LOGGER = logging.getLogger(__name__)
@@ -177,11 +178,9 @@ class HandAnalyzer:
                 below which hands are considered in the desk/writing workspace.
         """
         self.model_path = Path(model_path)
+        self._requested_device = str(device or "cpu").lower()
+        self._is_gpu_active = False
         self.device = "cpu"
-        if device is not None and device.lower() in ("cuda", "cuda:0", "gpu"):
-            LOGGER.debug(
-                "HandAnalyzer: MediaPipe Tasks on Linux operates on CPU via TensorFlow Lite XNNPACK delegate."
-            )
 
         self.max_hands = int(max_hands)
         self.min_detection_confidence = float(min_detection_confidence)
@@ -198,7 +197,7 @@ class HandAnalyzer:
     @property
     def is_gpu_accelerated(self) -> bool:
         """Whether the analyzer is currently executing on a GPU device."""
-        return self.device.startswith("cuda")
+        return self._is_gpu_active
 
     def _load(self) -> bool:
         """Load the hand landmarker, degrading to unavailable rather than raising."""
@@ -209,13 +208,42 @@ class HandAnalyzer:
             from mediapipe.tasks.python import BaseOptions, vision
 
             self._mp = mp
+
+            # Try GPU delegate if requested and supported
+            if self._requested_device in ("cuda", "cuda:0", "gpu"):
+                try:
+                    self._landmarker = vision.HandLandmarker.create_from_options(
+                        vision.HandLandmarkerOptions(
+                            base_options=BaseOptions(
+                                model_asset_path=str(self.model_path),
+                                delegate=BaseOptions.Delegate.GPU,
+                            ),
+                            num_hands=self.max_hands,
+                            min_hand_detection_confidence=self.min_detection_confidence,
+                        )
+                    )
+                    self._is_gpu_active = True
+                    self.device = "cuda"
+                    return True
+                except Exception as gpu_exc:
+                    LOGGER.info(
+                        "MediaPipe HandLandmarker GPU delegate unavailable (%s); falling back to CPU XNNPACK.",
+                        gpu_exc,
+                    )
+
+            # Standard CPU path (Google TFLite XNNPACK)
             self._landmarker = vision.HandLandmarker.create_from_options(
                 vision.HandLandmarkerOptions(
-                    base_options=BaseOptions(model_asset_path=str(self.model_path)),
+                    base_options=BaseOptions(
+                        model_asset_path=str(self.model_path),
+                        delegate=BaseOptions.Delegate.CPU,
+                    ),
                     num_hands=self.max_hands,
                     min_hand_detection_confidence=self.min_detection_confidence,
                 )
             )
+            self._is_gpu_active = False
+            self.device = "cpu"
             return True
         except Exception as exc:
             LOGGER.info("Hand landmarker unavailable: %s", exc)
@@ -237,12 +265,14 @@ class HandAnalyzer:
         mouth_region: tuple[int, int, int, int] | None = None,
         paper_bbox: tuple[int, int, int, int] | None = None,
         timestamp_seconds: float | None = None,
+        rgb_frame: np.ndarray | None = None,
     ) -> HandAnalysisResult:
         """Detect hands and, when face geometry is supplied, describe their position.
 
         Without ``face_bbox`` the analyzer still reports how many hands it saw but
         makes no proximity claims, since "near the face" is meaningless with no
         face to measure against.
+        ``rgb_frame`` eliminates redundant color conversions across pipeline stages.
         """
         import time
 
@@ -252,11 +282,10 @@ class HandAnalyzer:
 
         t0 = time.perf_counter()
         try:
-            import cv2
-
+            image_data = rgb_frame if rgb_frame is not None else cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = self._mp.Image(
                 image_format=self._mp.ImageFormat.SRGB,
-                data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                data=image_data,
             )
             detection = self._landmarker.detect(mp_image)
         except Exception as exc:

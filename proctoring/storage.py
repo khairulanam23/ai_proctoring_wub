@@ -39,7 +39,7 @@ import json
 import logging
 import shutil
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -311,7 +311,7 @@ class ProctoringStorage:
                 "schema_version": _SCHEMA_VERSION,
                 "student": student,
                 "student_key": self.student_key(student),
-                "created_at_utc": datetime.utcnow().isoformat() + "Z",
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
                 "image_count": len(written),
                 "template_count": len(templates),
                 "images": entries,

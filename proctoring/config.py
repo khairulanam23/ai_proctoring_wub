@@ -100,14 +100,6 @@ class SessionConfig:
     # ------------------------------------------------------------------
     # Stage 6 — Scene / behavioural observation (object detection)
     # ------------------------------------------------------------------
-    device: str = "auto"
-    """Target execution device preference ('auto', 'cuda', 'cpu').
-    In 'auto' mode:
-    - YOLO11 uses CUDA if available, falling back to CPU safely.
-    - YuNet & SFace run on CPU (OpenCV DNN MLAS SGEMM engine).
-    - MediaPipe landmarker pipelines run on CPU (Google TFLite XNNPACK).
-    """
-
     enable_object_detection: bool = True
     object_confidence_threshold: float = 0.25
 
@@ -164,6 +156,10 @@ class SessionConfig:
     """An incident shorter than this is still recorded, but marked ``RECORDED``
     rather than ``QUALIFIED`` — the transient-noise filter the workflow calls for.
     Left unset, the exam policy supplies it."""
+
+    alert_repeat_interval_seconds: float = 15.0
+    """Cooldown interval before a continuing active qualified incident emits another
+    alert. Prevents alert flooding while the AI continues monitoring every frame."""
 
     # ------------------------------------------------------------------
     # Stages 8-9 — Evidence creation & validation
@@ -368,6 +364,7 @@ class SessionConfig:
             "temporal_qualification": {
                 "absence_tolerance_seconds": self.absence_tolerance_seconds,
                 "min_event_duration_seconds": self.min_event_duration_seconds,
+                "alert_repeat_interval_seconds": self.alert_repeat_interval_seconds,
             },
             "evidence": {
                 "capture_evidence": self.capture_evidence,
@@ -439,6 +436,7 @@ class SessionConfig:
             _policy=policy,
             absence_tolerance_seconds=float(temp.get("absence_tolerance_seconds", data.get("absence_tolerance_seconds", 0.5))),
             min_event_duration_seconds=float(temp.get("min_event_duration_seconds", data.get("min_event_duration_seconds", 1.0))),
+            alert_repeat_interval_seconds=float(temp.get("alert_repeat_interval_seconds", data.get("alert_repeat_interval_seconds", 15.0))),
             capture_evidence=bool(evid.get("capture_evidence", data.get("capture_evidence", True))),
             crop_padding_ratio=float(evid.get("crop_padding_ratio", data.get("crop_padding_ratio", 0.1))),
             jpeg_quality=int(evid.get("jpeg_quality", data.get("jpeg_quality", 95))),

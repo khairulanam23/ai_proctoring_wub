@@ -47,7 +47,13 @@ pythonpath = ["."]
 filterwarnings = [
     # MediaPipe emits these from its own teardown at interpreter exit.
     "ignore::DeprecationWarning:mediapipe.*",
+    # Third-party PyTorch/CLIP dependency TorchScript deprecation warning on Python 3.14+
+    "ignore:`torch.jit.load` is not supported in Python 3.14+.*:FutureWarning:torch.jit._serialization",
 ]
+markers = [
+    "smoke: expensive real-world or model-loading smoke validation (excluded from default runs)",
+]
+addopts = "-m 'not smoke'"
 
 [tool.ruff]
 line-length = 100

@@ -49,8 +49,9 @@ class EventType(str, Enum):
     HAND_LIFTED_FROM_PAPER = "HAND_LIFTED_FROM_PAPER"  # Hand lifted vertically away from paper surface
     HAND_LEAVING_WRITING_AREA = "HAND_LEAVING_WRITING_AREA"  # Hand departed designated writing workspace
 
-    # Speech / vocalisation / audio events
-    CANDIDATE_SPEAKING = "CANDIDATE_SPEAKING"  # Sustained mouth articulation consistent with speech
+    # Speech / vocalisation / audio events (Semantics: MOUTH_MOVEMENT_DETECTED is visual-only; no acoustic recording)
+    MOUTH_MOVEMENT_DETECTED = "MOUTH_MOVEMENT_DETECTED"  # Visual lip/jaw articulation observed (no acoustic recording/VAD)
+    CANDIDATE_SPEAKING = "CANDIDATE_SPEAKING"  # Backwards-compatible alias for MOUTH_MOVEMENT_DETECTED (visual only)
     ACOUSTIC_SPEECH_DETECTED = "ACOUSTIC_SPEECH_DETECTED"  # Acoustic voice activity detected from audio stream
     MULTIPLE_SPEAKERS_DETECTED = "MULTIPLE_SPEAKERS_DETECTED"  # Multiple acoustic voice sources detected
     MULTIMODAL_SPEECH_CONGRUENT = "MULTIMODAL_SPEECH_CONGRUENT"  # Simultaneous lip articulation and acoustic speech

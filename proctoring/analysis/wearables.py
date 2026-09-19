@@ -203,29 +203,73 @@ class WearableDetector:
             self.load_model()
 
     def load_model(self) -> bool:
-        """Load YOLO-World and bind the text prompts, degrading gracefully on failure."""
+        """Load YOLO-World and bind text prompts with strict offline airgap enforcement."""
         try:
+            import warnings
             from pathlib import Path
             from ultralytics import YOLOWorld
+            from proctoring.core.model_registry import ModelRegistry
 
-            model_target = self.model_name
+            # 1. Enforce local YOLO-World model existence (zero network downloads)
+            model_target = None
             candidates = [
                 Path(self.model_name),
                 Path("models") / self.model_name,
                 Path(__file__).resolve().parent.parent.parent / "models" / self.model_name,
             ]
             for c in candidates:
-                if c.exists():
-                    model_target = str(c)
+                if c.is_file():
+                    model_target = str(c.resolve())
                     break
 
+            if model_target is None:
+                LOGGER.warning(
+                    "WearableDetector: Local weights not found for '%s'. "
+                    "Dynamic network downloads are strictly disabled for offline airgap compliance. "
+                    "Wearable detector marked unavailable.",
+                    self.model_name,
+                )
+                self.model = None
+                self.is_available = False
+                return False
+
+            # 2. Enforce local CLIP weights existence (prevent dynamic ViT-B/32 download)
+            clip_candidates = [
+                Path("weights/clip/ViT-B-32.pt"),
+                Path(__file__).resolve().parent.parent.parent / "weights" / "clip" / "ViT-B-32.pt",
+                Path.home() / ".cache" / "clip" / "ViT-B-32.pt",
+            ]
+            clip_found = any(p.is_file() for p in clip_candidates)
+            if not clip_found:
+                LOGGER.warning(
+                    "WearableDetector: Local CLIP weights not found ('weights/clip/ViT-B-32.pt'). "
+                    "Dynamic network downloads are strictly disabled for offline airgap compliance. "
+                    "Wearable detector marked unavailable.",
+                )
+                self.model = None
+                self.is_available = False
+                return False
+
+            # 3. Verify cryptographic integrity before loading
+            ModelRegistry.verify_model_integrity(model_target)
+
+            # 4. Load local YOLO-World model
             self.model = YOLOWorld(model_target)
-            self.model.set_classes(self.prompts)
+
+            # 5. Bind text prompts with targeted Python 3.14 TorchScript deprecation filter
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    category=FutureWarning,
+                    message=r".*torch\.jit\.load is not supported in Python 3\.14.*",
+                )
+                self.model.set_classes(self.prompts)
+
             if self.device:
                 self.model.to(self.device)
             self.is_available = True
         except Exception as exc:
-            LOGGER.info("Wearable detector unavailable: %s", exc)
+            LOGGER.warning("Wearable detector unavailable: %s", exc)
             self.model = None
             self.is_available = False
         return self.is_available

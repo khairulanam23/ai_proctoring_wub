@@ -105,7 +105,7 @@ def test_dropout_bridging_prevents_fragmentation(dummy_detector):
     # Frame 0: Phone visible at t=0.0s
     aggregator.update_object_observations(
         detected_objects=[
-            {"class_name": "cell phone", "confidence": 0.9, "bbox": (50, 50, 150, 150)}
+            {"class_name": "cell phone", "confidence": 0.9, "bbox": (50, 50, 100, 150)}
         ],
         timestamp=0.0,
         frame_index=0,
@@ -123,7 +123,7 @@ def test_dropout_bridging_prevents_fragmentation(dummy_detector):
     # Frame 2: Phone reappears at t=0.4s
     aggregator.update_object_observations(
         detected_objects=[
-            {"class_name": "cell phone", "confidence": 0.92, "bbox": (52, 52, 152, 152)}
+            {"class_name": "cell phone", "confidence": 0.92, "bbox": (52, 52, 102, 152)}
         ],
         timestamp=0.4,
         frame_index=2,
@@ -133,7 +133,7 @@ def test_dropout_bridging_prevents_fragmentation(dummy_detector):
     # Frame 3: Phone visible at t=1.2s
     aggregator.update_object_observations(
         detected_objects=[
-            {"class_name": "cell phone", "confidence": 0.95, "bbox": (55, 55, 155, 155)}
+            {"class_name": "cell phone", "confidence": 0.95, "bbox": (55, 55, 105, 155)}
         ],
         timestamp=1.2,
         frame_index=3,
@@ -165,8 +165,8 @@ def test_spatial_iou_tracking_multi_objects(dummy_detector):
     )
 
     # Two distinct phones on screen simultaneously
-    obj_left = {"class_name": "cell phone", "confidence": 0.88, "bbox": (10, 10, 80, 80)}
-    obj_right = {"class_name": "cell phone", "confidence": 0.91, "bbox": (400, 300, 500, 400)}
+    obj_left = {"class_name": "cell phone", "confidence": 0.88, "bbox": (10, 10, 60, 110)}
+    obj_right = {"class_name": "cell phone", "confidence": 0.91, "bbox": (400, 300, 450, 400)}
 
     aggregator.update_object_observations(
         detected_objects=[obj_left, obj_right],

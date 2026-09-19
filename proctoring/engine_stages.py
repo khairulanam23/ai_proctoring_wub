@@ -12,6 +12,7 @@ import logging
 import time
 from typing import Any
 
+import cv2
 import numpy as np
 
 from proctoring.analysis.facial_dynamics import FacialDynamicsAnalyzer
@@ -427,14 +428,21 @@ class StageCoordinator:
         timing: FrameTimingRecord,
         per_model_times: dict[str, float],
     ) -> None:
-        """Stage 6b — measure hands, speech articulation, gaze, and worn devices."""
+        # Stage 6b — measure hands, speech articulation, gaze, and worn devices.
         behaviour_start = time.perf_counter()
+
+        # Optimize MediaPipe preprocessing: convert BGR to RGB once if any MediaPipe stage is enabled
+        needs_rgb = (
+            (self.facial_dynamics is not None and self.facial_dynamics.is_available)
+            or (self.hand_analyzer is not None and self.hand_analyzer.is_available)
+        )
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if (needs_rgb and frame is not None and frame.size > 0) else None
 
         # 1. Facial dynamics: speaking, head pose, gaze
         if self.facial_dynamics is not None and self.facial_dynamics.is_available:
             try:
                 obs.facial_dynamics = self.facial_dynamics.analyze(
-                    frame, timestamp_seconds=obs.timestamp_seconds
+                    frame, timestamp_seconds=obs.timestamp_seconds, rgb_frame=rgb_frame
                 )
                 if obs.facial_dynamics.gaze is not None:
                     obs.gaze = obs.facial_dynamics.gaze
@@ -452,6 +460,7 @@ class StageCoordinator:
                     ear_regions=dynamics.ear_regions if dynamics else None,
                     mouth_region=dynamics.mouth_region if dynamics else None,
                     timestamp_seconds=obs.timestamp_seconds,
+                    rgb_frame=rgb_frame,
                 )
                 per_model_times["hand_analysis"] = obs.hand_analysis.inference_ms
             except Exception as exc:

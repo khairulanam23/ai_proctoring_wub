@@ -1,0 +1,140 @@
+scenario_id: phone
+name: Smartphone & Hand-Held Device Capture
+description: >
+  Structured protocol for collecting diverse smartphone interactions, orientations,
+  occlusions, and common hard negatives (wallets, calculators, remotes, empty cupped hands).
+version: "1.0"
+default_preparation_seconds: 5
+default_recording_seconds: 10
+
+steps:
+  - step_id: empty_hands_baseline
+    instruction: "Rest both hands empty and flat on the desk. Look naturally at the screen."
+    instructed_condition: "empty_hands_desk"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Clean baseline with no objects in hands or on visible desk surface."
+
+  - step_id: phone_on_desk_screen_up
+    instruction: "Place your smartphone flat on the desk with the screen facing UP, next to your keyboard or writing area."
+    instructed_condition: "phone_desk_faceup"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Stationary phone on desk surface."
+
+  - step_id: phone_on_desk_screen_down
+    instruction: "Flip the smartphone so the screen faces DOWN on the desk."
+    instructed_condition: "phone_desk_facedown"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Phone back panel / camera bump visible."
+
+  - step_id: phone_pick_up_and_hold
+    instruction: "Pick up the phone with your dominant hand and hold it as if reading a message."
+    instructed_condition: "phone_holding_portrait"
+    preparation_seconds: 5
+    recording_seconds: 12
+    notes: "Natural portrait hand grip."
+
+  - step_id: phone_landscape_orientation
+    instruction: "Rotate the phone 90 degrees to landscape orientation and hold it with one or both hands."
+    instructed_condition: "phone_holding_landscape"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Landscape orientation grip."
+
+  - step_id: phone_two_handed_typing
+    instruction: "Hold your phone with both hands at desk level as if typing a text message with both thumbs."
+    instructed_condition: "phone_two_handed_texting"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Bimanual hand grip and thumb micro-movements."
+
+  - step_id: phone_partial_occlusion_hand
+    instruction: "Hold the phone close to the desk, partially covering the screen with your fingers or palm."
+    instructed_condition: "phone_partial_occlusion_fingers"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Simulates stealth or partial hand occlusion."
+
+  - step_id: phone_put_down_desk
+    instruction: "Put the phone back down onto the desk surface smoothly."
+    instructed_condition: "phone_putting_down"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Transition motion from holding to resting."
+
+  # Hard Negatives Section
+  - step_id: hard_neg_cupped_hand
+    instruction: "Cup your dominant hand as if holding a phone, but keep your hand completely empty."
+    instructed_condition: "hard_negative_empty_cupped_hand"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Hard negative: discriminates empty hand shape from object grip."
+
+  - step_id: hard_neg_wallet_question
+    instruction: "Do you have a pocket wallet or cardholder available?"
+    instructed_condition: "prompt_wallet_availability"
+    question:
+      prompt: "Do you have a wallet or cardholder available?"
+      options:
+        - key: "Y"
+          label: "Yes"
+          next_step: "hard_neg_wallet"
+        - key: "N"
+          label: "No"
+          next_step: "hard_neg_calculator_question"
+
+  - step_id: hard_neg_wallet
+    instruction: "Hold your wallet or cardholder in your hand exactly as you held the smartphone."
+    instructed_condition: "hard_negative_wallet_holding"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Hard negative: rectangular leather/fabric object vs smartphone."
+
+  - step_id: hard_neg_calculator_question
+    instruction: "Do you have a calculator or small remote control available?"
+    instructed_condition: "prompt_calculator_availability"
+    question:
+      prompt: "Do you have a calculator or remote available?"
+      options:
+        - key: "Y"
+          label: "Yes"
+          next_step: "hard_neg_calculator"
+        - key: "N"
+          label: "No"
+          next_step: "hard_neg_powerbank_question"
+
+  - step_id: hard_neg_calculator
+    instruction: "Hold the calculator or remote in your hand, pointing or interacting with it."
+    instructed_condition: "hard_negative_calculator_holding"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Hard negative: handheld device with buttons/screen."
+
+  - step_id: hard_neg_powerbank_question
+    instruction: "Do you have a power bank or notebook available?"
+    instructed_condition: "prompt_powerbank_availability"
+    question:
+      prompt: "Do you have a power bank or small notebook available?"
+      options:
+        - key: "Y"
+          label: "Yes"
+          next_step: "hard_neg_powerbank"
+        - key: "N"
+          label: "No"
+          next_step: "phone_session_complete"
+
+  - step_id: hard_neg_powerbank
+    instruction: "Hold the power bank or small notebook on the desk or in hand."
+    instructed_condition: "hard_negative_powerbank_or_notebook"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Hard negative: solid rectangular slab resembling a smartphone."
+
+  - step_id: phone_session_complete
+    instruction: "Phone capture sequence finished. Relax and return to neutral posture."
+    instructed_condition: "neutral_end"
+    preparation_seconds: 2
+    recording_seconds: 5
+    notes: "Terminal resting state."

@@ -1,0 +1,80 @@
+scenario_id: paper
+name: Physical Paper & Written Exam Materials Capture
+description: >
+  Protocol for recording physical sheets of paper, answer scripts, writing posture,
+  sheet flipping, and hard negatives (white laptops, keyboards, mousepads, book covers).
+version: "1.0"
+default_preparation_seconds: 5
+default_recording_seconds: 10
+
+steps:
+  - step_id: empty_desk_baseline
+    instruction: "Clear your desk of all loose papers. Place hands comfortably on the table."
+    instructed_condition: "empty_desk_baseline"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Baseline desk surface without paper objects."
+
+  - step_id: paper_flat_on_desk
+    instruction: "Place a standard white sheet of paper flat on the desk in front of you."
+    instructed_condition: "paper_sheet_flat_desk"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Single A4/Letter white paper sheet flat in camera view."
+
+  - step_id: writing_with_pen
+    instruction: "Take a pen or pencil and simulate writing continuously on the paper sheet."
+    instructed_condition: "active_writing_hand_kinematics"
+    preparation_seconds: 5
+    recording_seconds: 15
+    notes: "Natural hand micro-oscillations, pen grip, and downward gaze."
+
+  - step_id: pick_paper_up
+    instruction: "Pick the paper sheet up with both hands and hold it slightly elevated to read it."
+    instructed_condition: "holding_elevated_paper"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Paper held up off the desk plane."
+
+  - step_id: flip_paper_page
+    instruction: "Flip the paper over smoothly from front to back, then lay it flat again."
+    instructed_condition: "flipping_paper_sheet"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Dynamic transition and curvature changes."
+
+  - step_id: multiple_sheets_overlapping
+    instruction: "Place 2 or 3 overlapping sheets of paper on your desk."
+    instructed_condition: "multiple_overlapping_papers"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Layered quadrilateral contours."
+
+  - step_id: partial_occlusion_paper
+    instruction: "Partially occlude the paper sheet with your forearm, notebook, or laptop edge."
+    instructed_condition: "partially_occluded_paper"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Partial boundary occlusion."
+
+  # Hard Negatives Section
+  - step_id: hard_neg_white_laptop_or_keyboard
+    instruction: "Position your keyboard or laptop prominently in the camera view with hands typing naturally."
+    instructed_condition: "hard_negative_keyboard_laptop"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Hard negative: rectangular light-colored hardware vs paper."
+
+  - step_id: hard_neg_mousepad_or_folder
+    instruction: "Place a rectangular mousepad, folder, or book cover flat on the desk."
+    instructed_condition: "hard_negative_mousepad_or_bookcover"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Hard negative: colored or textured rectangular planar boundary."
+
+  - step_id: paper_session_complete
+    instruction: "Paper capture sequence finished. Return to neutral resting position."
+    instructed_condition: "neutral_end"
+    preparation_seconds: 2
+    recording_seconds: 5
+    notes: "Session conclusion."

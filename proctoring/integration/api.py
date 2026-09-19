@@ -52,6 +52,7 @@ class StartSessionPayload(BaseModel):
     sampling_fps: float = 4.0
     enable_wearable_detection: bool = False
     enrolment_id: str | None = None
+    reference_templates: list[list[float]] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -278,6 +279,7 @@ def create_app(service: ProctoringService | None = None) -> FastAPI:
             sampling_fps=payload.sampling_fps,
             enable_wearable_detection=payload.enable_wearable_detection,
             enrolment_id=payload.enrolment_id or payload.candidate_id or payload.user_id or payload.candidate_name,
+            reference_templates=payload.reference_templates,
             metadata=payload.metadata,
         )
         try:
@@ -382,6 +384,8 @@ def create_app(service: ProctoringService | None = None) -> FastAPI:
                         "session_id": session_id,
                         "frame_index": ack.frame_index,
                         "observations": ack.active_observations,
+                        "active_incidents": ack.active_incidents,
+                        "alerts": ack.emitted_alerts,
                     },
                 )
             return ack.to_dict()

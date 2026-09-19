@@ -92,6 +92,7 @@ class FrameObservation:
 
     # Stage 7
     active_event_types: list[str] = field(default_factory=list)
+    emitted_alerts: list[dict[str, Any]] = field(default_factory=list)
 
     # Multi-Subject Persistent Tracking (Phase 2)
     tracked_subjects: list[Any] = field(default_factory=list)
@@ -148,6 +149,7 @@ class FrameObservation:
             "audio_observation": self.audio_observation.to_dict() if hasattr(self.audio_observation, "to_dict") else None,
             "multimodal_observation": self.multimodal_observation.to_dict() if hasattr(self.multimodal_observation, "to_dict") else None,
             "active_event_types": self.active_event_types,
+            "emitted_alerts": self.emitted_alerts,
             "tracked_subjects": [s.to_dict() if hasattr(s, "to_dict") else s for s in self.tracked_subjects],
             "tracked_objects": [o.to_dict() if hasattr(o, "to_dict") else o for o in self.tracked_objects],
         }

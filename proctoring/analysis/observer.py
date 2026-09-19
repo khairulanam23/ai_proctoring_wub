@@ -112,17 +112,24 @@ class BehaviourObserver:
 
         # 2. Face-present behavioural observations
         if face_present and dynamics is not None:
-            if dynamics.is_speaking and policy.allows(EventType.CANDIDATE_SPEAKING):
-                active[EventType.CANDIDATE_SPEAKING] = {
+            if dynamics.is_speaking and (
+                policy.allows(EventType.MOUTH_MOVEMENT_DETECTED)
+                or policy.allows(EventType.CANDIDATE_SPEAKING)
+            ):
+                mouth_event = (
+                    EventType.MOUTH_MOVEMENT_DETECTED
+                    if policy.allows(EventType.MOUTH_MOVEMENT_DETECTED)
+                    else EventType.CANDIDATE_SPEAKING
+                )
+                active[mouth_event] = {
                     "confidence": float(dynamics.speech_activity or 0.5),
                     "bbox": dynamics.mouth_region,
-                    # Deliberately hedged wording. The camera measured a mouth
-                    # opening and closing repeatedly; it did not hear anything, and
-                    # the observation text a proctor reads must not imply it did.
+                    "sensor": "visual_blendshapes",
+                    "audio_recorded": False,
                     "description": (
-                        "Possible talking: sustained speech-like mouth activity "
+                        "Visual mouth movement detected: sustained speech-like mouth activity "
                         f"(articulation {float(dynamics.speech_activity or 0.0):.2f}). "
-                        "No audio is recorded — confirm from the snapshot"
+                        "No audio is recorded — purely visual blendshape observation"
                     ),
                 }
 

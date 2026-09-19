@@ -2,6 +2,7 @@
 
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 import cv2
@@ -42,6 +43,44 @@ DEFAULT_CLASS_THRESHOLDS: dict[str, float] = {
 }
 
 
+class ExamObjectCategory(str, Enum):
+    """Target object classification taxonomy for WUB examination environments.
+
+    NOTE ON MODEL QUALITY VALIDATION:
+    Standard COCO weights conflate class 67 ('cell phone') with ordinary exam stationery
+    (scientific calculators, power banks, notebooks, pencil cases).
+    This taxonomy formalizes the domain categories for future fine-tuning.
+    Until an empirical WUB dataset is collected and trained, the ML domain
+    quality remains explicitly marked as NOT_VALIDATED.
+    """
+
+    PHONE = "PHONE"
+    CALCULATOR = "CALCULATOR"
+    NOTEBOOK = "NOTEBOOK"
+    PAPER = "PAPER"
+    PEN = "PEN"
+    POWER_BANK = "POWER_BANK"
+    EARBUD = "EARBUD"
+    OTHER = "OTHER"
+
+
+COCO_TO_EXAM_CATEGORY_MAP: dict[str, ExamObjectCategory] = {
+    "cell phone": ExamObjectCategory.PHONE,
+    "phone": ExamObjectCategory.PHONE,
+    "mobile phone": ExamObjectCategory.PHONE,
+    "book": ExamObjectCategory.NOTEBOOK,
+    "laptop": ExamObjectCategory.OTHER,
+    "tablet": ExamObjectCategory.PHONE,
+    "remote": ExamObjectCategory.CALCULATOR,
+    "keyboard": ExamObjectCategory.OTHER,
+    "mouse": ExamObjectCategory.OTHER,
+    "backpack": ExamObjectCategory.OTHER,
+    "handbag": ExamObjectCategory.OTHER,
+    "suitcase": ExamObjectCategory.OTHER,
+    "bottle": ExamObjectCategory.OTHER,
+}
+
+
 @dataclass
 class ProctoringDetectionReport:
     """Structured proctoring detection report containing filtered relevant objects and person counts."""
@@ -56,6 +95,7 @@ class ProctoringDetectionReport:
     image_height: int
     inference_time_ms: float
     timestamp: float = field(default_factory=time.time)
+    domain_validation_status: str = "NOT_VALIDATED"
 
     def to_dict(self) -> dict[str, Any]:
         """Convert report to a JSON-serializable dictionary."""
@@ -70,6 +110,7 @@ class ProctoringDetectionReport:
             "relevant_objects": [obj.to_dict() for obj in self.relevant_objects],
             "ignored_objects": [obj.to_dict() for obj in self.ignored_objects],
             "raw_result": self.raw_result.to_dict(),
+            "domain_validation_status": self.domain_validation_status,
         }
 
 

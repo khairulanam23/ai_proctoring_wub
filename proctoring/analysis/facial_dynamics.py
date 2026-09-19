@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
 from proctoring.analysis.gaze import GazeDirection, GazeObservation, GazeTracker
@@ -232,11 +233,9 @@ class FacialDynamicsAnalyzer:
                 spoofing is serious.
         """
         self.model_path = Path(model_path)
+        self._requested_device = str(device or "cpu").lower()
+        self._is_gpu_active = False
         self.device = "cpu"
-        if device is not None and device.lower() in ("cuda", "cuda:0", "gpu"):
-            LOGGER.debug(
-                "FacialDynamicsAnalyzer: MediaPipe Tasks on Linux operates on CPU via TensorFlow Lite XNNPACK delegate."
-            )
 
         self.speech_window_frames = max(4, int(speech_window_frames))
         self.speech_articulation_amplitude = float(speech_articulation_amplitude)
@@ -289,14 +288,44 @@ class FacialDynamicsAnalyzer:
             from mediapipe.tasks.python import BaseOptions, vision
 
             self._mp = mp
+
+            # Try GPU delegate if requested and supported by the runtime environment
+            if self._requested_device in ("cuda", "cuda:0", "gpu"):
+                try:
+                    self._landmarker = vision.FaceLandmarker.create_from_options(
+                        vision.FaceLandmarkerOptions(
+                            base_options=BaseOptions(
+                                model_asset_path=str(self.model_path),
+                                delegate=BaseOptions.Delegate.GPU,
+                            ),
+                            output_face_blendshapes=True,
+                            output_facial_transformation_matrixes=True,
+                            num_faces=self.max_faces,
+                        )
+                    )
+                    self._is_gpu_active = True
+                    self.device = "cuda"
+                    return True
+                except Exception as gpu_exc:
+                    LOGGER.info(
+                        "MediaPipe FaceLandmarker GPU delegate unavailable (%s); falling back to CPU XNNPACK.",
+                        gpu_exc,
+                    )
+
+            # Standard CPU path (Google TFLite XNNPACK)
             self._landmarker = vision.FaceLandmarker.create_from_options(
                 vision.FaceLandmarkerOptions(
-                    base_options=BaseOptions(model_asset_path=str(self.model_path)),
+                    base_options=BaseOptions(
+                        model_asset_path=str(self.model_path),
+                        delegate=BaseOptions.Delegate.CPU,
+                    ),
                     output_face_blendshapes=True,
                     output_facial_transformation_matrixes=True,
                     num_faces=self.max_faces,
                 )
             )
+            self._is_gpu_active = False
+            self.device = "cpu"
             return True
         except Exception as exc:
             LOGGER.info("Face landmarker unavailable: %s", exc)
@@ -305,7 +334,7 @@ class FacialDynamicsAnalyzer:
     @property
     def is_gpu_accelerated(self) -> bool:
         """Whether the analyzer is currently executing on a GPU device."""
-        return self.device.startswith("cuda")
+        return self._is_gpu_active
 
     def close(self) -> None:
         """Release the underlying landmarker."""
@@ -407,12 +436,15 @@ class FacialDynamicsAnalyzer:
         self,
         frame: np.ndarray,
         timestamp_seconds: float | None = None,
+        rgb_frame: np.ndarray | None = None,
     ) -> FacialDynamicsResult:
         """Measure facial dynamics for one frame.
 
         ``timestamp_seconds`` is used only for liveness accounting; omit it and
         the blink measure still counts blinks but cannot report how long the face
         has been watched without one.
+        ``rgb_frame`` allows passing an already-converted RGB image to eliminate
+        redundant cvtColor operations across multiple MediaPipe stages.
         """
         import time
 
@@ -422,11 +454,10 @@ class FacialDynamicsAnalyzer:
 
         t0 = time.perf_counter()
         try:
-            import cv2
-
+            image_data = rgb_frame if rgb_frame is not None else cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = self._mp.Image(
                 image_format=self._mp.ImageFormat.SRGB,
-                data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                data=image_data,
             )
             detection = self._landmarker.detect(mp_image)
         except Exception as exc:

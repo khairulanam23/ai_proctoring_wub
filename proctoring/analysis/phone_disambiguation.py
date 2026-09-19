@@ -16,6 +16,7 @@ import numpy as np
 
 from proctoring.analysis.hands import HandAnalysisResult, HandObservation
 from proctoring.detection.object_detector import DetectedObject
+from proctoring.detection.object_relevance import ExamObjectCategory
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +45,8 @@ class PhoneDisambiguationResult:
     hand_gripping: bool = False
     temporal_confirmations: int = 1
     bbox: tuple[int, int, int, int] | None = None
+    exam_category: ExamObjectCategory = ExamObjectCategory.PHONE
+    domain_validation_status: str = "NOT_VALIDATED"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,6 +59,8 @@ class PhoneDisambiguationResult:
             "hand_gripping": self.hand_gripping,
             "temporal_confirmations": self.temporal_confirmations,
             "bbox": list(self.bbox) if self.bbox else None,
+            "exam_category": self.exam_category.value,
+            "domain_validation_status": self.domain_validation_status,
         }
 
 
@@ -72,6 +77,8 @@ class PhoneHandDisambiguator:
     ) -> None:
         self.min_phone_aspect_ratio = min_phone_aspect_ratio
         self.max_phone_aspect_ratio = max_phone_aspect_ratio
+        # high_confidence_bypass retained for backwards compatibility; raw detector confidence
+        # alone no longer bypasses contextual hand/geometry/temporal verification.
         self.high_confidence_bypass = high_confidence_bypass
         self.hand_overlap_threshold = hand_overlap_threshold
         self.min_temporal_frames = min_temporal_frames
@@ -100,20 +107,7 @@ class PhoneHandDisambiguator:
         short_side = min(width, height)
         aspect_ratio = long_side / short_side
 
-        # 1. Very high confidence YOLO detections without anomalies bypass deeper rejection
-        if raw_conf >= self.high_confidence_bypass:
-            confs = self._update_temporal_track(bbox, frame_index)
-            return PhoneDisambiguationResult(
-                classification=PhoneClassification.CONFIRMED_PHONE,
-                confidence=raw_conf,
-                raw_confidence=raw_conf,
-                reason="High-confidence detection with characteristic phone profile",
-                aspect_ratio=aspect_ratio,
-                temporal_confirmations=confs,
-                bbox=bbox,
-            )
-
-        # 2. Spatial interaction with hand landmarks
+        # 1. Contextual hand interaction and landmark analysis (Authoritative over raw detector confidence)
         max_iou = 0.0
         is_gripping = False
         empty_hand_false_positive = False
@@ -132,9 +126,9 @@ class PhoneHandDisambiguator:
                     if empty:
                         empty_hand_false_positive = True
 
-        # If box is almost entirely inside an empty hand with marginal confidence -> False Positive
+        # If box aligns with an empty open hand -> Contextual False Positive dismissal
         if empty_hand_false_positive:
-            if max_iou > self.hand_overlap_threshold and raw_conf < 0.60:
+            if max_iou > self.hand_overlap_threshold:
                 return PhoneDisambiguationResult(
                     classification=PhoneClassification.HAND_FALSE_POSITIVE,
                     confidence=raw_conf * 0.3,
@@ -145,7 +139,7 @@ class PhoneHandDisambiguator:
                     hand_gripping=False,
                     bbox=bbox,
                 )
-            elif max_iou > 0.35 and raw_conf < 0.75:
+            elif max_iou > 0.35:
                 return PhoneDisambiguationResult(
                     classification=PhoneClassification.HAND_OBJECT_AMBIGUITY,
                     confidence=raw_conf * 0.5,
@@ -157,9 +151,28 @@ class PhoneHandDisambiguator:
                     bbox=bbox,
                 )
 
-        # 3. Aspect ratio check
+        # 3. Aspect ratio and stationery ambiguity check
         # Phones are rectangular slabs (~16:9 to 21:9, ratio ~1.6 - 2.3).
-        # An almost square box (< 1.20) or hyper-elongated (> 3.2) is suspicious.
+        # Squarish or moderately wide rectangular profiles (< 1.45) frequently conflate
+        # scientific calculators, power banks, and small notebooks on the candidate desk.
+        if aspect_ratio < 1.45 and not is_gripping:
+            return PhoneDisambiguationResult(
+                classification=PhoneClassification.UNCERTAIN_CANDIDATE,
+                confidence=raw_conf * 0.55,
+                raw_confidence=raw_conf,
+                reason=(
+                    f"Candidate aspect ratio ({aspect_ratio:.2f}) conflates smartphone with "
+                    f"scientific calculator or rectangular stationery on desk; domain quality NOT_VALIDATED"
+                ),
+                aspect_ratio=aspect_ratio,
+                hand_iou=max_iou,
+                hand_gripping=False,
+                temporal_confirmations=self._update_temporal_track(bbox, frame_index),
+                bbox=bbox,
+                exam_category=ExamObjectCategory.CALCULATOR,
+                domain_validation_status="NOT_VALIDATED",
+            )
+
         aspect_ok = self.min_phone_aspect_ratio <= aspect_ratio <= self.max_phone_aspect_ratio
         if not aspect_ok and raw_conf < 0.70:
             return PhoneDisambiguationResult(
@@ -169,6 +182,8 @@ class PhoneHandDisambiguator:
                 reason=f"Irregular aspect ratio ({aspect_ratio:.2f}) for standard smartphone",
                 aspect_ratio=aspect_ratio,
                 bbox=bbox,
+                exam_category=ExamObjectCategory.OTHER,
+                domain_validation_status="NOT_VALIDATED",
             )
 
         # 4. Temporal confirmation tracking

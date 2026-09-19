@@ -69,6 +69,7 @@ class StartSessionRequest:
     sampling_fps: float = 4.0
     enable_wearable_detection: bool = False
     enrolment_id: str | None = None
+    reference_templates: list[Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -124,6 +125,7 @@ class StartSessionRequest:
             "sampling_fps": self.sampling_fps,
             "enable_wearable_detection": self.enable_wearable_detection,
             "enrolment_id": self.enrolment_id,
+            "reference_templates": self.reference_templates,
             "metadata": self.metadata,
         }
 
@@ -143,6 +145,7 @@ class StartSessionRequest:
             sampling_fps=float(data.get("sampling_fps", 4.0)),
             enable_wearable_detection=bool(data.get("enable_wearable_detection", False)),
             enrolment_id=data.get("enrolment_id"),
+            reference_templates=data.get("reference_templates"),
             metadata=data.get("metadata", {}),
         )
 
@@ -206,6 +209,12 @@ class FrameAck:
     active_observations: list[str] = field(default_factory=list)
     """Event types currently open. Not a verdict — conditions being watched."""
 
+    active_incidents: list[str] = field(default_factory=list)
+    """All qualified conditions currently active on screen."""
+
+    emitted_alerts: list[dict[str, Any]] = field(default_factory=list)
+    """Structured alerts emitted on this specific frame under repeat cooldown rules."""
+
     engine_state: str | None = None
     """The engine's processing state for this frame (RUNNING, PAUSED, ...). Lets a
     client tell a rejected-because-paused frame from a rejected-because-corrupt one."""
@@ -235,6 +244,8 @@ class FrameAck:
             "detected_objects": self.detected_objects,
             "detected_wearables": self.detected_wearables,
             "active_observations": self.active_observations,
+            "active_incidents": self.active_incidents,
+            "emitted_alerts": self.emitted_alerts,
             "engine_state": self.engine_state,
             "processing_latency_ms": round(self.processing_latency_ms, 2),
             "next_frame_due_in_seconds": round(self.next_frame_due_in_seconds, 3),
@@ -541,3 +552,67 @@ DEFAULT_REVIEWER_GUIDANCE: list[str] = [
     "Source frames under evidence/frames/ are unmodified. Images under "
     "evidence/review/ are annotated copies produced by the system.",
 ]
+
+
+@dataclass
+class IncidentReviewRecord:
+    """Human review record for an AI observation incident."""
+
+    observation_id: str
+    session_id: str
+    original_event_type: str
+    original_ai_label: str
+    original_detector: str
+    original_detector_version: str
+    original_confidence: float
+    original_timestamp: str
+    review_status: str  # "PENDING", "CONFIRMED", "CORRECTED", "REJECTED", "UNCERTAIN"
+    reviewed_label: str | None = None
+    reviewer_id: str | None = None
+    reviewed_at_utc: str | None = None
+    review_notes: str | None = None
+    bbox: list[int] | None = None
+    evidence_ref: str | None = None
+    image_sha256: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "observation_id": self.observation_id,
+            "session_id": self.session_id,
+            "original_event_type": self.original_event_type,
+            "original_ai_label": self.original_ai_label,
+            "original_detector": self.original_detector,
+            "original_detector_version": self.original_detector_version,
+            "original_confidence": self.original_confidence,
+            "original_timestamp": self.original_timestamp,
+            "review_status": self.review_status,
+            "reviewed_label": self.reviewed_label,
+            "reviewer_id": self.reviewer_id,
+            "reviewed_at_utc": self.reviewed_at_utc,
+            "review_notes": self.review_notes,
+            "bbox": self.bbox,
+            "evidence_ref": self.evidence_ref,
+            "image_sha256": self.image_sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "IncidentReviewRecord":
+        return cls(
+            observation_id=data["observation_id"],
+            session_id=data["session_id"],
+            original_event_type=data["original_event_type"],
+            original_ai_label=data.get("original_ai_label", data["original_event_type"]),
+            original_detector=data.get("original_detector", "unknown"),
+            original_detector_version=data.get("original_detector_version", "unknown"),
+            original_confidence=float(data.get("original_confidence", 0.0)),
+            original_timestamp=data.get("original_timestamp", ""),
+            review_status=data.get("review_status", "PENDING"),
+            reviewed_label=data.get("reviewed_label"),
+            reviewer_id=data.get("reviewer_id"),
+            reviewed_at_utc=data.get("reviewed_at_utc"),
+            review_notes=data.get("review_notes"),
+            bbox=data.get("bbox"),
+            evidence_ref=data.get("evidence_ref"),
+            image_sha256=data.get("image_sha256"),
+        )
+

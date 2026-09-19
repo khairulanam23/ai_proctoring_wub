@@ -16,19 +16,41 @@ from typing import Any
 
 class ReviewStatus(str, Enum):
     PENDING = "pending"
-    VERIFIED = "verified"
+    CONFIRMED = "confirmed"
+    CORRECTED = "corrected"
+    VERIFIED = "verified"  # backward compatibility
     REJECTED = "rejected"
+    UNCERTAIN = "uncertain"
 
 
 class TargetObjectLabel(str, Enum):
+    # Core Phase 3 controlled object taxonomy
     PHONE = "phone"
+    SCIENTIFIC_CALCULATOR = "scientific_calculator"
+    POWER_BANK = "power_bank"
+    NOTEBOOK = "notebook"
+    BOOK = "book"
+    PENCIL_CASE = "pencil_case"
+    ID_CARD = "id_card"
+    EARBUDS = "earbuds"
+    HEADPHONES = "headphones"
+    PEN = "pen"
+    PENCIL = "pencil"
+    PAPER = "paper"
+    KEYBOARD = "keyboard"
+    MOUSE = "mouse"
+    OTHER = "other"
+
+    # Disqualification / negative categories (EXCLUDED from positive object classes)
+    UNCERTAIN = "uncertain"
+    NOT_A_RELEVANT_OBJECT = "not_a_relevant_object"
+    HARD_NEGATIVE_OBJECT = "hard_negative_object"
+
+    # Backward compatibility aliases
     EARBUD = "earbud"
     OVER_EAR_HEADPHONE = "over_ear_headphone"
-    PAPER = "paper"
     TABLET = "tablet"
     LAPTOP = "laptop"
-    BOOK = "book"
-    HARD_NEGATIVE_OBJECT = "hard_negative_object"
 
 
 @dataclass
@@ -58,20 +80,37 @@ class AnnotatedBBox:
         )
 
 
+# Positive object classes for YOLO training (strictly excludes uncertain and not_a_relevant_object)
 YOLO_LABEL_MAP: dict[TargetObjectLabel, int] = {
     TargetObjectLabel.PHONE: 0,
-    TargetObjectLabel.EARBUD: 1,
-    TargetObjectLabel.OVER_EAR_HEADPHONE: 2,
-    TargetObjectLabel.PAPER: 3,
-    TargetObjectLabel.TABLET: 4,
-    TargetObjectLabel.LAPTOP: 5,
-    TargetObjectLabel.BOOK: 6,
+    TargetObjectLabel.SCIENTIFIC_CALCULATOR: 1,
+    TargetObjectLabel.POWER_BANK: 2,
+    TargetObjectLabel.NOTEBOOK: 3,
+    TargetObjectLabel.BOOK: 4,
+    TargetObjectLabel.PENCIL_CASE: 5,
+    TargetObjectLabel.ID_CARD: 6,
+    TargetObjectLabel.EARBUDS: 7,
+    TargetObjectLabel.HEADPHONES: 8,
+    TargetObjectLabel.PEN: 9,
+    TargetObjectLabel.PENCIL: 10,
+    TargetObjectLabel.PAPER: 11,
+    TargetObjectLabel.KEYBOARD: 12,
+    TargetObjectLabel.MOUSE: 13,
+    TargetObjectLabel.OTHER: 14,
+}
+
+# Non-trainable labels (excluded from positive detector training)
+NON_TRAINABLE_LABELS: set[TargetObjectLabel] = {
+    TargetObjectLabel.UNCERTAIN,
+    TargetObjectLabel.NOT_A_RELEVANT_OBJECT,
+    TargetObjectLabel.HARD_NEGATIVE_OBJECT,
 }
 
 
 def get_yolo_class_names() -> dict[int, str]:
     """Return map of class ID to class string name for dataset YAML configs."""
     return {idx: label.value for label, idx in YOLO_LABEL_MAP.items()}
+
 
 
 @dataclass

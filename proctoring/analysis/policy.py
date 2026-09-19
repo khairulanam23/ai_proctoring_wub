@@ -55,7 +55,9 @@ class ExamMode(str, Enum):
     """
 
     DIGITAL_SCREEN = "DIGITAL_SCREEN"
+    DIGITAL_EXAM = "DIGITAL_SCREEN"
     PHYSICAL_PAPER = "PHYSICAL_PAPER"
+    WRITTEN_PDF_EXAM = "PHYSICAL_PAPER"
 
 
 # Observations that every level reports. These are the unambiguous ones: their
@@ -79,6 +81,7 @@ _BASELINE_EVENTS: frozenset[EventType] = frozenset(
 
 _STRICT_ADDITIONS: frozenset[EventType] = frozenset(
     {
+        EventType.MOUTH_MOVEMENT_DETECTED,
         EventType.CANDIDATE_SPEAKING,
         EventType.LOOKING_AWAY,
         EventType.SUSPICIOUS_HEAD_POSE,
@@ -346,6 +349,7 @@ class ExamPolicy:
                     EventType.HEADPHONES_DETECTED: 0.75,
                     EventType.EARBUDS_SUSPECTED: 2.0,
                     EventType.MULTIPLE_FACES: 1.0,
+                    EventType.MOUTH_MOVEMENT_DETECTED: 2.0,
                     EventType.CANDIDATE_SPEAKING: 2.0,
                     EventType.LOOKING_AWAY: 3.0,
                     EventType.SUSPICIOUS_HEAD_POSE: 1.0,
@@ -378,6 +382,7 @@ class ExamPolicy:
                     EventType.HEADPHONES_DETECTED: 0.5,
                     EventType.EARBUDS_SUSPECTED: 1.5,
                     EventType.MULTIPLE_FACES: 0.5,
+                    EventType.MOUTH_MOVEMENT_DETECTED: 1.5,
                     EventType.CANDIDATE_SPEAKING: 1.5,
                     EventType.LOOKING_AWAY: 2.0,
                     EventType.SUSPICIOUS_HEAD_POSE: 1.0,
@@ -505,6 +510,7 @@ class ExamPolicy:
 BEHAVIOURAL_SEVERITY: dict[EventType, EventSeverity] = {
     # Speech-like mouth activity is inferred from lip movement with no audio, so it
     # is triaged below observations the camera can actually confirm.
+    EventType.MOUTH_MOVEMENT_DETECTED: EventSeverity.MEDIUM,
     EventType.CANDIDATE_SPEAKING: EventSeverity.MEDIUM,
     EventType.SUSPICIOUS_HEAD_POSE: EventSeverity.MEDIUM,
     EventType.POSSIBLE_PRESENTATION_ATTACK: EventSeverity.MEDIUM,  # weak signal

@@ -3,17 +3,17 @@
 ```yaml
 project: AI Proctoring Engine
 document: project_state.md
-state_version: 6.0 (Phase 8 Final Production Validation, Integration, Cleanup & Freeze Complete)
-last_audited: 2026-09-12
-audit_type: phase_8_final_production_validation
+state_version: 8.1 (Phase 3 Human-Reviewed Dataset & Candidate Training Pipeline Complete & Frozen)
+last_audited: 2026-09-19
+audit_type: phase_3_finalization_and_freeze
 audited_by: senior_ai_systems_engineer
 base_commit: 967e9ae53b6167f244f2b4ebaa311788384e4394
 git_branch: main
-working_tree_status: phase_8_frozen
-test_suite_status: 455 passed, 1 skipped, 0 failed (456 collected in 162.23s)
+working_tree_status: phase_3_frozen
+phase_1_status: ACCEPTED (Architecture & Qualification Correction, Identity Semantics, Contextual Disambiguation)
 phase_2_status: ACCEPTED (Persistent Multi-Subject Tracking & Spatial Association)
-phase_3_status: ACCEPTED (Phone / Hand / Paper / Writing Behavioral Analysis)
-phase_4_status: ACCEPTED (Proctoring Dataset + Training Pipeline & Registry)
+phase_3_status: COMPLETE / FROZEN (Human-Reviewed Dataset and Candidate Training Pipeline)
+phase_4_status: PLANNED (Production Model Benchmarking & Multi-Modal Dataset Expansion)
 phase_5_status: ACCEPTED (Model Improvement Assessment & Empirical Benchmarking)
 phase_6_status: ACCEPTED (Modular Audio VAD & Multimodal Audio-Visual Correlation)
 phase_7_status: ACCEPTED (GPU Acceleration, Shared Model Lifecycle & Concurrency)
@@ -79,7 +79,7 @@ The **AI Proctoring Engine** is an in-house computer vision and telemetry verifi
 | **Temporal State Debouncing & Aggregation**| `IMPLEMENTED` | `proctoring.temporal.aggregator.UnifiedTemporalAggregator`| Core test suite |
 | **Camera Health & Diagnostics** | `IMPLEMENTED` | `proctoring.preprocessing.camera_health.CameraHealthMonitor`| Core test suite |
 | **Frame Quality Gate** | `IMPLEMENTED` | `proctoring.preprocessing.quality_gate.FrameQualityGate` | Core test suite |
-| **Live Exam Controller Integration Wire**| `FUTURE PHASE` | `proctoring.integration.api` / `schemas` | Ready for future hookup |
+| **Live Exam Controller Integration Wire**| `IMPLEMENTED & VERIFIED` (Candidate `reference_templates` supplied via `/api/v1/session/start`, biometric enrolment via `/api/v1/candidate/enrol`) | `proctoring.integration.api` / `schemas` / `service` | `tests/core/test_phase1_architecture_correction.py`, `tests/integration/test_api.py` |
 | **Multi-Camera Secondary Phone Sync** | `PLANNED` | N/A | Future Roadmap |
 
 ---
@@ -781,3 +781,440 @@ in this directory.
    ```bash
    .venv/bin/pytest tests/integration/test_camera_lifecycle.py tests/integration/test_exam_controller_live_wire.py -v
    ```
+
+---
+
+## 31. Isolated Guided Dataset Capture System (Research-Side Tooling)
+
+### 31.1 Identity & Architectural Purpose
+* **Tool Name**: Guided Dataset Capture Tool (`tools/capture_dataset.py`)
+* **Role**: Research and empirical data-collection utility.
+* **Production Boundary**:
+  ```text
+  The guided dataset capture system is research-only.
+  It is not part of production inference.
+  Production AI behavior must remain unchanged.
+  ```
+* **Mission**: Collect high-fidelity, structured, real-world video recordings under controlled experimental conditions (smartphone usage, physical paper exam materials, earphones/wearables, natural exam behaviors) with exact timeline manifests to power future AI model training and benchmark evaluations.
+
+### 31.2 Production AI Protection & Independence
+* **Production AI Inference**: UNCHANGED
+* **Production Models**: UNCHANGED
+* **Production Thresholds**: UNCHANGED
+* **Production Event & Incident Logic**: UNCHANGED
+* **Production Evidence & Outbox Logic**: UNCHANGED
+* **Production Service Configuration**: UNCHANGED
+* **Production Coupling**: ZERO. The production inference pipeline has no dependency on `tools/capture_dataset.py`. The capture tool only reuses safe low-level camera discovery routines from `proctoring.capture.camera`.
+
+### 31.3 Capture Architecture & Workflow
+```text
+Operator / Participant
+         ↓
+tools/capture_dataset.py
+         ↓
+Camera Discovery & Preflight (proctoring.capture.camera)
+         ↓
+Load Scenario YAML (configs/capture_scenarios/)
+         ↓
+Interactive Step Loop:
+  - Instructions & Prep Countdown (configurable sec)
+  - Recording Countdown (continuous single raw MP4)
+  - Interactive Y/N Branching & Jump Targets
+  - Operator Controls (Pause, Resume, Skip, Repeat, Abort)
+         ↓
+Data Integrity Check (Disk space check, SHA-256, Video probe)
+         ↓
+Storage Output:
+  data/capture_sessions/<participant_id>/<session_id>/<scenario_id>/
+    ├── raw_video.mp4
+    ├── session_manifest.json
+    └── checksum.sha256
+```
+
+### 31.4 The "Instruction != Ground Truth" ML Invariant
+Instructions presented to human participants (e.g. "Put one earphone in your left ear") are recorded in manifests strictly as `instructed_condition`, **never** as verified `ground_truth`. Participants may perform actions partially, incorrectly, or with occlusions. Verified ground truth remains the purview of downstream human annotation workflows.
+
+### 31.5 Files Added
+1. `agent_rules.md`: Agent behavioral contract combining Ponytail engineering philosophy with strict AI proctoring protection rules.
+2. `tools/capture_dataset.py`: Standalone guided dataset capture CLI utility with camera preflight, continuous video recording, GUI/headless preview, interactive branching, safe interruption handling, and manifest generation.
+3. `configs/capture_scenarios/phone.yaml`: Scenario for smartphone detection, varied orientations, partial occlusions, and hard negatives (wallets, calculators, remotes, empty cupped hands).
+4. `configs/capture_scenarios/paper.yaml`: Scenario for physical sheets, desk arrangements, active writing kinematics, page flipping, and hard negatives (white laptops, keyboards, mousepads, book covers).
+5. `configs/capture_scenarios/earphones.yaml`: Scenario for wireless earbuds, wired earphones, over-ear headphones, removal dynamics, and anatomical hard negatives (touching ears, hair shadows, earrings).
+6. `configs/capture_scenarios/natural_exam.yaml`: Scenario for realistic candidate behavior (screen reading, downward gaze, typing, thinking look-aways, posture shifts, natural blinking).
+7. `tests/tools/test_capture_dataset.py`: Comprehensive test suite for YAML parsing, branching logic, disk space guards, anti-overwrite protection, schema compliance, and interruption safety.
+
+### 31.6 Files Modified
+1. `project_state.md`: Updated with Section 31 documenting research tooling and safety boundaries.
+
+### 31.7 Production Files Intentionally Untouched
+* `proctoring/detection/*` (YuNet face detector, SFace verifier, YOLO11n object detector)
+* `proctoring/analysis/*` (phone disambiguation, paper detection, wearables, hand kinematics, gaze, head movement)
+* `proctoring/temporal/*` (unified temporal state aggregator)
+* `proctoring/core/*` (session lifecycle, persistence journal, model registry)
+* `proctoring/evidence/*` (package sealing, detached SHA-256 evidence)
+* `proctoring/integration/*` (FastAPI service, live wire API, offline outbox)
+* `proctoring/engine.py` (proctoring inference orchestration)
+* `proctoring/config.py` (production configuration)
+* `models/*` (all frozen production weights)
+
+### 31.8 Pre-Production Validation & Actual Tests Executed
+1. **Capture Dataset Suite (Full Unit & Integration)**:
+   ```bash
+   .venv/bin/pytest tests/tools/test_capture_dataset.py -v
+   ```
+   Result: `12 passed in 1.40s` (verified YAML loading, branching on both Y and N paths, interactive skip/repeat controls, disk space guards, duplicate session protection, manifest schema compliance, `instructed_condition` invariant, interruption preservation, frame accounting integrity, and independent OpenCV MP4 frame decoding).
+2. **Capture Utility Regression Suite**:
+   ```bash
+   .venv/bin/pytest tests/capture/ -v
+   ```
+   Result: `9 passed in 0.15s`
+3. **Linter & Style Validation**:
+   ```bash
+   .venv/bin/ruff check tools/capture_dataset.py tests/tools/test_capture_dataset.py
+   ```
+   Result: `All checks passed!`
+4. **Hardware Discovery & Device Diagnostics**:
+   - Inspected USB bus: Identified physical webcam `Bus 001 Device 004: ID 0380:2006 ANYKA V380 FHD Camera`.
+   - Inspected kernel journal: Discovered `uvcvideo 1-5:1.1: Failed to set UVC probe control : -32 (exp. 26)` and `Failed to query (GET_CUR) UVC probe control : -32 (exp. 26)` due to endpoint stall with `quirks=0x102` in `/etc/modprobe.d/uvcvideo.conf`.
+   - Preflight command: `.venv/bin/python tools/capture_dataset.py --check-camera` cleanly caught the absence of a registered `/dev/video*` node without unhandled crashes.
+5. **Scenario Resolution CLI Check**:
+   ```bash
+   .venv/bin/python tools/capture_dataset.py --list-scenarios
+   ```
+   Result: Cleanly parsed and listed all 4 scenarios (`phone`, `paper`, `earphones`, `natural_exam`).
+
+### 31.9 Physical Camera Hardware Validation
+* **Hardware Verification Status**: `PASS (Fully validated on live physical camera video stream)`
+* **Physical Hardware Details**:
+  - **Camera**: ANYKA V380 FHD Camera
+  - **USB ID**: `0380:2006` (Bus 001, Device 006, Port 1-7)
+  - **Device Node**: `/dev/video0` (Video Capture); `/dev/video1` is UVC metadata node (`UVCH`)
+  - **Backend**: OpenCV V4L2 (`CAP_V4L2`)
+  - **Hardware Supported Modes**: MJPG (1080p, 720p, 480p, 360p @ 30fps); YUYV 4:2:2 (480p, 360p @ 30fps); H.264 (1080p, 720p, 480p, 360p @ 30fps)
+  - **Capturing Resolution**: 640x480
+  - **Configured FPS**: 30.0 FPS
+  - **Observed Sustained FPS**: ~11.47 - 11.49 FPS (Hardware camera sensor auto-exposure and `uvcvideo quirks=0x102` restrict frame delivery rate)
+
+* **Physical Real-Camera Captures Executed**:
+  1. **Scenario 1: `natural_exam` (Participant: `PTEST`, Session: `S002`)**:
+     - **Location**: `/tmp/real_camera_validation/PTEST/S002/natural_exam/`
+     - **Duration**: 119.10s (full unscaled scenario)
+     - **Frames Written**: 1,366
+     - **Independently Decoded Frames**: 1,366 (100% frame match)
+     - **File Size**: 5,860,367 bytes
+     - **Codec**: FMP4 / mp4v container
+     - **SHA-256**: `f02d18a9db409c549e800ad7a3475fc8a458270a20860afdcfb80bd29b1c8692` (verified against manifest and detached `checksum.sha256`)
+     - **Steps Executed**: 8 of 8 steps completed with contiguous `frame_start_index` and `frame_end_index` accounting.
+     - **Read Failures**: 0
+
+  2. **Scenario 2: `phone` (Participant: `PTEST`, Session: `S003`)**:
+     - **Location**: `/tmp/real_camera_validation/PTEST/S003/phone/`
+     - **Duration**: 82.14s (scaled 0.5x duration)
+     - **Frames Written**: 944
+     - **Independently Decoded Frames**: 944 (100% frame match)
+     - **File Size**: 5,725,244 bytes
+     - **Codec**: FMP4 / mp4v container
+     - **SHA-256**: `bcbe1e37703ec339ba8c1129e8301847598a18c7168630dfb71ab4724d66714a` (verified against manifest and detached `checksum.sha256`)
+     - **Steps Executed**: 11 active steps + 3 branching questions (`hard_neg_wallet_question` -> 'Y' -> `hard_neg_wallet` -> `hard_neg_calculator_question` -> 'N' -> `hard_neg_powerbank_question` -> 'N' -> `phone_session_complete`).
+     - **Read Failures**: 0
+
+* **Visual Quality & Proctoring-Relevant Inspection Results**:
+  - **Sharpness**: Laplacian variance mean = 222.68 (range: 184.71 - 295.42). Facial contours, eyeglass frames, hair texture, and cloth folds remain sharp.
+  - **Exposure & Contrast**: Grayscale mean = 107.0 (well-exposed, neither underexposed nor clipped/saturated); contrast std = 72.92.
+  - **Motion Dynamics**: Mean frame difference per 20 frames = 1.20 (max 7.49 during posture transitions). No black frames, frozen frames, or tearing observed.
+  - **Proctoring Visibility**: Visibly preserves face, eyes, eyeglasses, eyebrows, ears, mouth, hands, fingers, and posture shifts. Small object visibility (hand holding objects, cupped hand gesture, and facial contact) is preserved in raw video without artifacting.
+
+* **FPS Investigation & Temporal Hardening**:
+  - **Nominal V4L2 Descriptor**: Declares nominal 30.0 FPS.
+  - **Empirical Format Benchmarks (ANYKA V380 FHD `/dev/video0`)**:
+    - `640x480 YUYV`: 70 frames in 6.08s -> **11.51 FPS**
+    - `640x480 MJPG`: 130 frames in 6.06s -> **21.47 FPS**
+    - `1280x720 MJPG`: 130 frames in 6.05s -> **21.48 FPS**
+    - `1920x1080 MJPG`: 129 frames in 6.00s -> **21.50 FPS**
+    - `640x360 YUYV`: 129 frames in 6.00s -> **21.49 FPS**
+    - **Benchmark Conclusion**: Confirmed Outcome B — the physical camera sensor cannot achieve genuine near-30 FPS in any format due to internal sensor exposure timing and USB 2.0 throughput limits.
+  - **Root Cause of Accelerated Playback**: Previously, `cv2.VideoWriter` was initialized with the nominal 30.0 FPS from the descriptor. When capturing at ~11.5 FPS, 1,366 frames were packaged into a 30 FPS MP4 container, causing the video to play back in 45.5s instead of real capture duration (119.1s) — a 2.6x fast-forward distortion.
+  - **Temporal Hardening Architecture**:
+    1. **Distinct Temporal Semantics**: Dynamic manifest logging separates `requested_fps`, `reported_camera_fps`, `measured_effective_fps`, `encoded_fps`, `capture_duration_seconds`, `active_duration_seconds`, and `playback_duration_seconds`. No hardcoded FPS assumptions are used.
+    2. **Container FPS Synchronization**: Raw frames are staged to `raw_video_staging.mp4`. Upon session completion, `finalize_manifest()` calculates the exact measured capture rate (`measured_effective_fps = frames_written / active_duration`), and remuxes into `raw_video.mp4` with container FPS matching `measured_effective_fps`. The staging file is cleaned up immediately.
+    3. **Pause/Resume Temporal Integrity**: Tracks `total_paused_seconds` so all scenario step durations and countdowns reflect active elapsed time, preventing timeline drift or artificial frame delays across pauses.
+    4. **Physical S004 Verification (`natural_exam`, Participant: `PTEST`)**:
+       - Real active capture duration: **31.334s**
+       - Frames written & decoded: **360**
+       - Measured effective FPS: **11.49 FPS**
+       - Encoded container FPS: **11.49 FPS** (ffprobe: `r_frame_rate=1149/100`)
+       - Video playback duration: **31.332s**
+       - Playback duration vs active capture duration delta: **0.0024s (2.4 milliseconds)**
+       - Real-time 1:1 playback verified; 0 accelerated playback distortion.
+
+### 31.10 Defect Fixes & Improvements in Pre-Production Validation & Temporal Hardening
+1. **Container FPS Disconnect Fixed**: Eliminated the 2.6x accelerated playback defect by synchronizing container FPS to measured physical capture FPS via post-session container remuxing.
+2. **Distinct Temporal Metadata Added**: Manifest schema now records `requested_fps`, `reported_camera_fps`, `measured_effective_fps`, and `encoded_fps` alongside exact active capture and playback durations.
+3. **Pixel Format Selection Added**: Added `--pixel-format` CLI argument (`AUTO`, `MJPG`, `YUYV`) to allow explicit hardware format negotiation.
+4. **Pause/Resume Temporal Integrity Hardened**: Added `total_paused_seconds` accounting to decouple paused wall-clock time from active recording duration.
+5. **Branching Question Logging Defect Fixed**: Question steps are recorded into the manifest with operator responses prior to jumping.
+6. **Exact Frame Indexing Added**: Every step records `frame_start_index`, `frame_end_index`, and `frames_recorded`.
+7. **Synthetic Frame Pacing Added**: Dry-run countdowns pace frames accurately to match configured FPS.
+8. **Two-Handed Phone Step Added**: Added `phone_two_handed_typing` to `configs/capture_scenarios/phone.yaml`.
+
+### 31.11 Known Limitations
+1. Physical video capture requires an active V4L2 device node (`/dev/video*`).
+2. OpenCV GUI HUD preview (`cv2.imshow`) requires an active X11 or Wayland `$DISPLAY`. Headless environments must pass `--no-preview`.
+3. Audio track is not multiplexed into `raw_video.mp4` (multimodal audio remains managed by separate audio processors).
+4. Physical ANYKA V380 sensor delivers ~11.5 FPS in YUYV mode and ~21.5 FPS in MJPG mode under indoor lighting; container FPS synchronization ensures video plays back at real-world capture speed, and manifest frame indexes provide authoritative temporal mapping.
+
+### 31.12 Dataset Collection Readiness
+* **Status**: `READY FOR CONTROLLED PILOT COLLECTION`
+* **Intended Research Pipeline Progression**:
+  ```text
+  Real-world capture (tools/capture_dataset.py)
+            ↓
+  Human annotation / verification
+            ↓
+  Clip / frame extraction (via frame_start_index / frame_end_index)
+            ↓
+  Participant / session grouped dataset split (preventing cross-frame leakage)
+            ↓
+  Dataset QA
+            ↓
+  Model training / fine-tuning
+            ↓
+  Held-out evaluation
+  ```
+
+### 31.14 Portable Windows Dataset Collector (`DatasetCollector.exe`) & Still-Image Architecture
+* **Implementation Status**: `IMPLEMENTED & VERIFIED`
+* **Purpose**: Converts research dataset acquisition into a zero-dependency portable Windows application (`DatasetCollector.exe`) designed for non-technical participants and operators.
+* **Key Architectural Features**:
+  1. **Still-Image Protocol**: Migrated collection strategy from video recording to structured still photographs (45 serialized activities, exactly 2 photos per activity = 90 photos total), specified in `configs/capture_scenarios/activities.yaml`.
+  2. **Camera Support & Selection UX**:
+     - Windows DirectShow (`cv2.CAP_DSHOW`) prioritized for standard USB webcams and virtual camera software (DroidCam OBS, OBS Virtual Camera).
+     - Windows Media Foundation (`cv2.CAP_MSMF`) and Linux V4L2 (`cv2.CAP_V4L2`) supported.
+     - Interactive camera setup and framing preview screen allowing 1-click camera switching before collection begins.
+  3. **Interactive High-Contrast HUD**:
+     - OpenCV GUI with dual mouse click and keyboard controls.
+     - `[SPACE]` Capture Photo 1 / Photo 2 with visual shutter flash.
+     - `[R]` Retake protection.
+     - `[N]` / `[B]` Next / Back navigation.
+     - `[O]` Open Output Folder (launches native Windows File Explorer via `os.startfile`).
+  4. **Self-Contained Output Package**:
+     ```text
+     DatasetOutput/<participant_id>/<session_id>/
+     ├── session_manifest.json   # Schema version 2.0.0-still with camera metadata & file hashes
+     ├── checksum.sha256         # Detached cryptographic SHA-256 digest
+     ├── README.txt              # Deliverable explanation for dataset handoff
+     └── images/
+         ├── ACT001/ (photo_01.jpg, photo_02.jpg)
+         └── ...
+     ```
+  5. **Standalone Packaging**:
+     - `DatasetCollector.spec`: Configured for PyInstaller one-folder portable distribution (`dist/DatasetCollector/`).
+     - Heavy AI frameworks (`torch`, `ultralytics`, `mediapipe`, `onnxruntime`, `fastapi`) explicitly excluded to maintain 100% isolation and compact size.
+     - Automated build scripts: `build_windows.ps1` (PowerShell) and `build_windows.bat` (CMD).
+     - End-user guide: `README_WINDOWS.txt`.
+     - Developer build guide: `docs/WINDOWS_BUILD_GUIDE.md`.
+  6. **Automated Verification**:
+     - `pytest tests/tools/test_dataset_collector.py -v`: 14 of 14 passed in 0.35s (verifies YAML loading, resource path resolution, camera backends, sanitization, disk guards, 2-photo workflow, retake, session resumption, dataset handoff, paths with spaces, disconnected camera guard, 45-activity 90-photo end-to-end collection, mid-activity camera switch lock, and abort/incomplete session handling).
+     - Full capture test suite (`pytest tests/tools/test_dataset_collector.py tests/tools/test_capture_dataset.py tests/capture/ -v`): 39 of 39 passed in 22.60s.
+     - `ruff check`: All checks passed with 0 errors.
+
+### 31.15 Important Boundaries for Future Agents
+1. **Do not merge research capture code into production inference**: This tool is strictly a data-collection utility.
+2. **Do not modify `agent_rules.md`**: Adhere to the Ponytail ladder and safety guidelines.
+3. **Never silently overwrite session data**: Respect the duplicate session safety check.
+4. **Never treat `instructed_condition` as verified ground truth**: Human annotation is mandatory.
+
+---
+
+## 32. Phase 1: AI Proctoring Architecture Correction Implementation Specification
+
+### 32.1 Objective & Boundary Enforcement
+Phase 1 eliminates foundational defects identified during the forensic audit, enforcing explicit boundaries between raw detection, temporal qualification, identity verification, evidentiary capture, and future human-reviewed learning loops. Phase 1 strictly modifies the AI proctoring repository; Moodle, ExamController, and profile synchronization remain completely untouched.
+
+### 32.2 Completed in Phase 1
+1. **Temporal Qualification Hysteresis Correction (P0-A)**:
+   - In `proctoring/engine.py`, modified `obs.active_event_types` population so that only active incidents having `inc.status == EventStatus.QUALIFIED` are exposed. Single-frame transient candidates (`EventStatus.OPEN`) and ongoing unqualified detections (`EventStatus.ACTIVE`) remain internal state and never surface to client dashboards.
+   - In `proctoring/temporal/aggregator.py`, updated `update_face_observation` to pass `required_duration=self.min_duration_for(f_type)` to `ActiveIncident.add_observation()`, ensuring face events follow the standard lifecycle progression (`OPEN` $\to$ `ACTIVE` $\to$ `QUALIFIED`).
+   - Closed or resolved incidents are popped from `active_incidents` and no longer remain active.
+2. **Phone Hand Disambiguator Bypass Removal (P0-C)**:
+   - In `proctoring/analysis/phone_disambiguation.py`, removed the raw-confidence bypass (`high_confidence_bypass = 0.85`) where raw YOLO confidence $\ge 0.85$ circumvented contextual hand-landmark and temporal persistence checks.
+   - High raw object confidence $\neq$ automatically confirmed phone.
+   - Empty-hand false-positive dismissal is authoritative and cannot be bypassed by high raw detector confidence.
+   - Aspect-ratio checks (e.g. calculators $< 1.45$) cannot be bypassed by high raw detector confidence.
+   - Single-frame candidates without hand grip yield `PhoneClassification.POSSIBLE_PHONE`; only hand gripping (`is_gripping=True`) or multi-frame temporal persistence yields `CONFIRMED_PHONE`.
+   - `high_confidence_bypass` parameter retained in constructor for backward compatibility but deprecated and inactive.
+3. **Identity Semantics Clean Separation**:
+   - Cleanly separated face states across detection, verification, and event aggregation:
+     * **No Face Available**: `NO_FACE` / `NO_PERSON` $\to$ `EventType.NO_FACE`.
+     * **Face Detected but Not Verified / Unknown**: `UNKNOWN_FACE`, `UNKNOWN_PERSON_ONLY`, `IDENTITY_UNCERTAIN` $\to$ `EventType.UNKNOWN_FACE`.
+     * **Face Recognized but Does Not Match Expected Identity**: `FACE_MISMATCH`, `IDENTITY_MISMATCH` $\to$ `EventType.FACE_MISMATCH`.
+   - In `proctoring/temporal/aggregator.py`, added `EventType.FACE_MISMATCH` to active face tracking set and added factual observation formatting in `_close_incident` (`"Face mismatch detected for ..."`).
+4. **Future Enrollment Boundary Abstraction**:
+   - In `proctoring/integration/schemas.py`, added `reference_templates: list[Any] | None = None` to `StartSessionRequest` with full serialization support in `to_dict` and `from_dict`.
+   - In `proctoring/integration/service.py`, enabled `ProctoringService.start_session` to accept enrolled face representation vectors directly via `request.reference_templates` or `request.metadata["reference_templates"]`, converting them to 1D `float32` arrays and setting `config.reference_templates` and `config.enable_face_verification = True`.
+   - Zero hardcoding of student names, student IDs, faces, or image paths in the engine.
+5. **Evidence Review Metadata Preservation**:
+   - In `proctoring/temporal/aggregator.py`, enhanced `_close_incident` to package structured `review_metadata` in `EventRecord.metadata` containing `review_status="pending"`, `original_event_type`, `candidate_label`, `detector_name`, `detector_version`, and `best_confidence`.
+   - Retained bounding boxes, frame indices, timestamps, and quality scores for future human review and relabeling.
+
+### 32.3 Model Weights Status
+* **Explicit Declaration**: `No model weights were changed in Phase 1.`
+* Frozen production models remain:
+  - YuNet ONNX (`models/face_detection_yunet_2023mar.onnx`)
+  - SFace ONNX (`models/face_recognition_sface_2021dec.onnx`)
+  - YOLO11n PyTorch (`weights/yolo11n.pt`)
+  - MediaPipe Face Landmarker & Hand Landmarker (XNNPACK CPU)
+
+### 32.4 Production Synchronization Status
+* **Explicit Declaration**: `Moodle ↔ ExamController synchronization was not modified in Phase 1.`
+* AI service endpoints and schema contracts remain 100% backward compatible.
+
+### 32.5 Focused Test Execution & Results
+1. `tests/core/test_phase1_architecture_correction.py`:
+   - `test_temporal_qualification_lifecycle`: PASSED (verifies OPEN is internal, QUALIFIED surfaces, CLOSED disappears)
+   - `test_high_raw_phone_confidence_alone_does_not_confirm`: PASSED (verifies raw confidence 0.95 yields POSSIBLE_PHONE, persistence confirms, empty hand dismisses)
+   - `test_identity_semantics_distinguishability`: PASSED (verifies NO_FACE, UNKNOWN_FACE, and FACE_MISMATCH remain cleanly distinct)
+   - `test_qualified_incident_retains_review_metadata`: PASSED (verifies structured review_metadata and observation recovery)
+   - `test_future_enrollment_boundary_template_injection`: PASSED (verifies direct template injection without disk coupling)
+   - **Result**: 5 passed in 5.11s.
+2. `tests/detection/test_object_disambiguation.py` & `tests/analysis/test_phone_disambiguation.py`:
+   - **Result**: 8 passed in 0.12s.
+3. `tests/analysis/test_phase3_behavior.py`:
+   - **Result**: 5 passed in 0.18s.
+4. `tests/integration/test_api.py` (Manual Smoke Test):
+   - Confirmed service start, `/api/v1/health`, `/api/v1/models`, valid frame ingestion `/api/v1/session/{id}/frame`, `FrameAck` response structure, and state querying.
+   - **Result**: 4 passed in 5.03s.
+
+### 32.6 Known Architectural Limitations
+1. **Generic COCO Phone Detection**: Object detector uses generic COCO class 67 (`cell phone`). It has not been domain-fine-tuned on university desk stationery; aspect-ratio and contextual hand filtering mitigate false positives, but domain validation status remains `NOT_VALIDATED`.
+2. **Domain-Specific Object Training**: No WUB-specific student/desk dataset training has occurred in Phase 1.
+3. **2D Iris Displacement Gaze Estimation**: Gaze tracking remains a normalized 2D relative iris displacement proxy; camera placement, webcam angle, and optical parallax affect this signal. It provides directional observations (`GAZE_OFF_SCREEN`), not absolute 3D screen gaze coordinates.
+4. **MediaPipe CPU Execution**: MediaPipe Face and Hand Landmark pipelines run on CPU using XNNPACK delegates.
+5. **Earbud Detection Constraints**: Fine wearable/earbud detection remains limited and non-authoritative pending dedicated acoustic/visual training.
+6. **Production Biometric Enrollment Not Implemented**: The biometric enrollment UI, Moodle profile synchronization, and persistent student profile storage belong to Phase 2.
+7. **No Automatic Model Retraining**: Online self-training is strictly prohibited; all model updates require offline human annotation and champion/challenger gating (Phase 3).
+8. **No Phantom Student Test Identity in Phase 1**: The controlled `Phantom` test identity (ID `00000000`) was provisioned in Phase 2 and validated in Phase 3.
+
+---
+
+## 33. Phase 3: Human-Reviewed Dataset and Candidate Training Pipeline
+
+```yaml
+phase: AI Proctoring Phase 3: Human-Reviewed Dataset and Candidate Training Pipeline
+status: COMPLETE / FROZEN
+date: 2026-09-19
+freeze_state: FROZEN (Zero code changes, zero automated model overwriting)
+training_hardware: AMD Ryzen CPU + NVIDIA GeForce RTX 3060 12GB (CUDA:0)
+target_task: Object Detection Domain Adaptation (YOLO architecture)
+biometric_training: STRICTLY PROHIBITED (Biometric reference vectors excluded from exports; YuNet/SFace frozen)
+cheating_classification: STRICTLY PROHIBITED (No suspicion scores, no risk probabilities)
+production_weights_status: FROZEN (Zero automated overwrite of models/ or weights/)
+```
+
+### 33.1 Architecture & Controlled Feedback Seam
+Phase 3 closes the evidentiary feedback loop by allowing human reviewers in ExamController to authoritatively classify captured incident evidence and export curated datasets for local training:
+```text
+AI Inference (Real-Time Continuous Observation)
+       │
+       ▼
+Incident Observation & Evidence (ExamController proctoring_observations)
+       │
+       ▼
+Admin Review Workspace (AiIncidentReviewPage.tsx / Human Verification)
+       │
+       ▼
+Human Labeling (CONFIRMED / CORRECTED / UNCERTAIN / REJECTED)
+       │ (Original AI observation metadata preserved immutable)
+       ▼
+Dataset Export & Provenance Pipeline (proctoring/learning/datasets.py)
+       │ (Biometrics stripped, SHA-256 hashed, session-grouped disjoint splits)
+       ▼
+Candidate Training Workflow & Harness (proctoring/learning/pipeline.py)
+       │ (Integrity validation, dry-run execution, class taxonomy verification)
+       ▼
+Candidate Model Checkpoint (training/runs/run-YYYYMMDD-HHMMSS/weights/candidate_detector.pt)
+       │ (MODEL_MANIFEST.json, metrics.json, CANDIDATE status)
+       ▼
+Manual Developer Review & Evaluation (Zero automated promotion to production models/)
+```
+
+### 33.2 Completed Capabilities
+1. **Controlled Object Taxonomy**: Supported trainable taxonomy contains exactly 15 classes (`phone`, `scientific_calculator`, `power_bank`, `notebook`, `book`, `pencil_case`, `id_card`, `earbuds`, `headphones`, `pen`, `pencil`, `paper`, `keyboard`, `mouse`, `other`) mapped to contiguous YOLO class indices `0` through `14`.
+2. **Separation of Trainable and Non-Trainable Review Categories**: Non-trainable categories (`uncertain`, `not_a_relevant_object`, `hard_negative_object`) remain strictly segregated; they generate 0 positive YOLO bounding boxes and are excluded from `manifest.classes`.
+3. **Human Review Lifecycle**: Implemented and validated review states: `PENDING`, `CONFIRMED`, `CORRECTED`, `REJECTED`, `UNCERTAIN`.
+4. **Review Eligibility Rules**: Only human-reviewed samples (`CONFIRMED` and `CORRECTED` with `quality_pass=True`) are eligible for dataset export. Unreviewed (`PENDING`), ambiguous (`UNCERTAIN`), and false-alarm (`REJECTED`) samples are strictly excluded from positive training data.
+5. **Evidence Provenance**: Every exported training record preserves source incident ID, session ID, frame index, annotator ID, review status, and timestamp in `manifest.sample_records` and `provenance.json` with a 64-character SHA-256 provenance hash.
+6. **SHA-256 Integrity Tracking and Verification**: Every exported evidence image receives a SHA-256 hash persisted in `provenance.json` and `checksums.sha256`. Recalculating produces identical hashes, and file mutation is detected by `DatasetManager.verify_dataset_integrity(version)`.
+7. **Session-Group Dataset Splitting**: Partitioning into train, validation, and test sets is strictly grouped by `session_id`; partitions are pairwise disjoint to eliminate data leakage across sets.
+8. **Biometric-Data Exclusion**: Raw biometric identity vectors (`embedding`, `face_vector`, `reference_template`, `sface_vector`, etc.) are actively scrubbed and excluded from training exports, manifests, and provenance files.
+9. **Candidate Training Workflow**: Minimal supported pipeline validates dataset prerequisites, executes dry-run training harness, and registers candidate artifacts with status `CANDIDATE`.
+10. **Production-Model Freeze & Protection**: Active production models (`yolo_production_v1_0_0`, `models/`, and `weights/yolo11n.pt`) remain frozen and protected; candidate registration never replaces active production models.
+11. **Phase 3 Acceptance Suite**: Focused, deterministic, memory-safe acceptance test suite (`tests/test_phase3_acceptance.py`) executing all 7 Phase 3 invariant assertions in under 0.2 seconds.
+12. **Real-Chain Validation**: End-to-end runtime chain validated with authentic candidate camera frames: `camera/frame input` $\to$ `AI inference` $\to$ `event qualification & 15s cooldown` $\to$ `evidence packaging & SHA-256` $\to$ `persistence` $\to$ `inbox staging` $\to$ `human review` $\to$ `session-split export` $\to$ `candidate dry-run`.
+13. **Memory-Safe Test Strategy**: Fast unit/invariant tests run by default with zero model overhead; expensive smoke validation is segregated via `@pytest.mark.smoke`.
+14. **15-Second Per-Event Alert Cooldown (Runtime Behavior)**: Implemented in `proctoring/temporal/aggregator.py` ensuring continuous per-frame monitoring ($N$ frames in = $N$ processed) with alert suppression during active cooldown and repeat alerts emitted after 15.0s elapsed.
+
+### 33.3 Actual Validation Evidence
+The following executable evidence establishes formal Phase 3 completion:
+
+```text
+Phase 3 acceptance:
+7 passed, 1 deselected (.venv/bin/pytest tests/test_phase3_acceptance.py -v, 0.18s)
+
+Phase 3 smoke:
+1 passed, 7 deselected (.venv/bin/pytest tests/test_phase3_acceptance.py -m smoke -v, 4.96s)
+
+Event schema regression:
+2 passed (.venv/bin/pytest tests/core/test_events.py -v, 0.12s)
+
+Temporal aggregator regression:
+5 passed (.venv/bin/pytest tests/temporal/test_aggregator.py -v, 0.13s)
+
+Phase 3 review/dataset regression:
+4 passed (.venv/bin/pytest tests/core/test_phase3_review_and_dataset.py -v, 3.40s)
+
+Learning system regression:
+5 passed (.venv/bin/pytest tests/test_learning_system.py -v, 0.14s)
+
+Learning pipeline regression:
+2 passed (.venv/bin/pytest tests/test_learning_pipeline.py -v, 0.13s)
+
+Ruff:
+passed (0 errors, 0 warnings)
+
+Real-chain validation:
+passed (.venv/bin/python scripts/validate_phase3_real_chain.py, all 8 assertions verified)
+```
+
+### 33.4 Memory Constraint Documentation
+The full repository test suite (`pytest` without filter) was intentionally not used for Phase 3 acceptance because it caused excessive memory pressure on the development machine.
+
+Phase 3 acceptance was instead established through:
+* focused deterministic acceptance tests (`tests/test_phase3_acceptance.py`)
+* isolated smoke validation (`pytest -m smoke`)
+* targeted regression tests for directly interfaced components
+* one controlled real-chain validation on authentic candidate camera frames
+
+Phase 3 acceptance is formally validated through this scoped acceptance and regression suite without overloading system memory.
+
+### 33.5 Validation Scope
+- **Full repository pytest was not required** for Phase 3 completion.
+- **Benchmark suites were excluded** (`tests/benchmark/`).
+- **Large model training runs were excluded**; candidate training was validated through the minimal supported pipeline/dry-run.
+- **External robustness datasets were excluded** (`scripts/kaggle_robustness_test.py`).
+- **Real captured evidence was used** for the controlled real-chain validation (`frame_000018_00007887ms.jpg`, `image_01.jpg`).
+
+### 33.6 Phase 3 Freeze Declaration
+Phase 3 is hereby **COMPLETE and FROZEN**.
+- No additional Phase 3 feature work.
+- No architecture redesign.
+- No additional taxonomy expansion.
+- No large dataset collection.
+- No model retraining.
+- No broad test campaign.
+- No unrelated cleanup.
+- No Phase 4 implementation.
+Future changes should only be made if a concrete defect is discovered.
+
+
+

@@ -204,6 +204,36 @@ def test_unset_thresholds_come_from_the_policy():
     assert maximum.absence_tolerance_seconds < standard.absence_tolerance_seconds
 
 
+def test_session_config_device_deterministic():
+    """Verify SessionConfig.device has no duplicate declaration and resolves deterministically."""
+    import ast
+    from pathlib import Path
+    import proctoring.config
+
+    tree = ast.parse(Path(proctoring.config.__file__).read_text())
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "SessionConfig":
+            device_assigns = [
+                n for n in node.body
+                if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", None) == "device"
+            ]
+            assert len(device_assigns) == 1, (
+                f"Expected exactly 1 device declaration in SessionConfig, found {len(device_assigns)}"
+            )
+
+    default_cfg = SessionConfig(session_id="det_default")
+    assert default_cfg.device == "cuda"
+
+    cpu_cfg = SessionConfig(session_id="det_cpu", device="cpu")
+    assert cpu_cfg.device == "cpu"
+
+    auto_cfg = SessionConfig(session_id="det_auto", device="auto")
+    assert auto_cfg.device == "auto"
+
+    cuda_norm_cfg = SessionConfig(session_id="det_cuda", device=" CUDA:0 ")
+    assert cuda_norm_cfg.device == "cuda:0"
+
+
 # ---------------------------------------------------------------------------
 # 3. Identity across all faces
 # ---------------------------------------------------------------------------

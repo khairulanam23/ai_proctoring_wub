@@ -35,6 +35,8 @@ Thumbs.db
 .coverage
 htmlcov/
 *.egg-info/
+build/
+dist/
 
 # Logs
 *.log
@@ -53,6 +55,7 @@ models/*
 !models/.gitkeep
 checkpoints/
 runs/
+training/
 wandb/
 
 # Large ML / Model weights files

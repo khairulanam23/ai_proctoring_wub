@@ -1,0 +1,128 @@
+scenario_id: earphones
+name: Earphones, Headphones & Wearable Audio Capture
+description: >
+  Protocol for capturing wireless earbuds, wired earphones, over-ear headphones,
+  removal/adjustment dynamics, and common anatomical hard negatives (earrings, glasses, hair, ear touching).
+version: "1.0"
+default_preparation_seconds: 5
+default_recording_seconds: 10
+
+steps:
+  - step_id: bare_ears_baseline
+    instruction: "Ensure both ears are fully exposed and free of any devices or earrings. Look straight at the camera."
+    instructed_condition: "bare_ears_baseline"
+    preparation_seconds: 5
+    recording_seconds: 10
+    notes: "Neutral bare ear anatomical baseline."
+
+  - step_id: head_turn_left_bare
+    instruction: "Turn your head gently 45 degrees to the left to expose your right ear clearly."
+    instructed_condition: "bare_right_ear_profile"
+    preparation_seconds: 4
+    recording_seconds: 8
+    notes: "Side profile of right concha/tragus."
+
+  - step_id: head_turn_right_bare
+    instruction: "Turn your head gently 45 degrees to the right to expose your left ear clearly."
+    instructed_condition: "bare_left_ear_profile"
+    preparation_seconds: 4
+    recording_seconds: 8
+    notes: "Side profile of left concha/tragus."
+
+  - step_id: one_earbud_insert
+    instruction: "Insert ONE earbud into your LEFT ear. Face the camera directly."
+    instructed_condition: "one_earbud_left"
+    preparation_seconds: 6
+    recording_seconds: 10
+    notes: "Single earbud insertion."
+
+  - step_id: adjust_earbud_left
+    instruction: "Reach up with your left hand and gently adjust the earbud in your left ear."
+    instructed_condition: "adjusting_earbud_hand_occlusion"
+    preparation_seconds: 4
+    recording_seconds: 8
+    notes: "Hand interacting near earlobe / concha."
+
+  - step_id: question_second_earbud
+    instruction: "Do you have a second earbud available?"
+    instructed_condition: "prompt_second_earbud"
+    question:
+      prompt: "Do you have a second earbud available?"
+      options:
+        - key: "Y"
+          label: "Yes"
+          next_step: "two_earbuds_insert"
+        - key: "N"
+          label: "No"
+          next_step: "remove_one_earbud"
+
+  - step_id: two_earbuds_insert
+    instruction: "Insert the second earbud into your RIGHT ear. Look straight ahead."
+    instructed_condition: "two_earbuds_both_ears"
+    preparation_seconds: 6
+    recording_seconds: 10
+    notes: "Bilateral earbud presence."
+
+  - step_id: remove_one_earbud
+    instruction: "Remove one earbud from your ear and place it on the desk."
+    instructed_condition: "removing_one_earbud"
+    preparation_seconds: 5
+    recording_seconds: 8
+    notes: "Removal transition."
+
+  - step_id: remove_all_earbuds
+    instruction: "Remove any remaining earbuds so both ears are empty again."
+    instructed_condition: "all_earbuds_removed"
+    preparation_seconds: 5
+    recording_seconds: 8
+    notes: "Post-removal state."
+
+  # Wired / Over-ear Branching
+  - step_id: question_wired_or_overear
+    instruction: "Do you have wired earphones or over-ear headphones available?"
+    instructed_condition: "prompt_wired_overear"
+    question:
+      prompt: "Do you have wired earphones or over-ear headphones?"
+      options:
+        - key: "Y"
+          label: "Yes"
+          next_step: "wear_wired_or_overear"
+        - key: "N"
+          label: "No"
+          next_step: "hard_neg_touch_ear"
+
+  - step_id: wear_wired_or_overear
+    instruction: "Put on your wired earphones or over-ear headphones and look at the camera."
+    instructed_condition: "wired_or_overear_headphones_worn"
+    preparation_seconds: 7
+    recording_seconds: 10
+    notes: "Cable drape or headphone headband presence."
+
+  - step_id: remove_wired_or_overear
+    instruction: "Take off the wired earphones or headphones and set them aside."
+    instructed_condition: "headphones_removed"
+    preparation_seconds: 4
+    recording_seconds: 6
+    notes: "Clean ear state restored."
+
+  # Hard Negatives
+  - step_id: hard_neg_touch_ear
+    instruction: "Rest your hand against your cheek or scratch near your ear without wearing any device."
+    instructed_condition: "hard_negative_scratching_ear"
+    preparation_seconds: 4
+    recording_seconds: 8
+    notes: "Hard negative: fingers resting against ear/jawline."
+
+  - step_id: hard_neg_adjust_hair
+    instruction: "Tuck hair behind your ears with both hands, letting hair partially cover your earlobes."
+    instructed_condition: "hard_negative_hair_tuck_shadow"
+    preparation_seconds: 4
+    recording_seconds: 8
+    notes: "Hard negative: hair shadows, strands occluding concha."
+
+  - step_id: earphones_session_complete
+    instruction: "Earphones capture sequence complete. Thank you."
+    instructed_condition: "neutral_end"
+    preparation_seconds: 2
+    recording_seconds: 5
+    notes: "Session conclusion."

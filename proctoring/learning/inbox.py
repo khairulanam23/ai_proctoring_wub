@@ -94,6 +94,7 @@ class TrainingInboxManager:
         self.base_dir = Path(base_dir)
         self.samples_dir = self.base_dir / "samples"
         self.queue_file = self.base_dir / "queue.jsonl"
+        self._counter = 0
 
         self.samples_dir.mkdir(parents=True, exist_ok=True)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -112,7 +113,12 @@ class TrainingInboxManager:
         metadata: dict[str, Any] | None = None,
     ) -> InboxSample:
         """Atomically persist a sample frame/crop and record it in the inbox queue."""
-        sample_id = f"samp_{int(time.time())}_{session_id[:8]}_{frame_index}_{target_class}"
+        self._counter += 1
+        safe_session = "".join(c for c in session_id if c.isalnum() or c in ("-", "_"))
+        safe_class = target_class.replace(" ", "_").lower()
+        sample_id = (
+            f"samp_{int(time.time() * 1000)}_{self._counter:04d}_{safe_session}_{frame_index}_{safe_class}"
+        )
         img_filename = f"{sample_id}.jpg"
         img_path = self.samples_dir / img_filename
         rel_path = f"samples/{img_filename}"

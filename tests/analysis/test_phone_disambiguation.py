@@ -11,7 +11,8 @@ from proctoring.analysis.phone_disambiguation import (
 from proctoring.detection.object_detector import DetectedObject
 
 
-def test_high_confidence_phone_confirmed():
+def test_high_confidence_phone_requires_temporal_or_hand_evidence():
+    """Verify high raw confidence alone does not confirm without contextual or temporal evidence."""
     disambiguator = PhoneHandDisambiguator()
     phone = DetectedObject(
         class_id=67,
@@ -19,19 +20,25 @@ def test_high_confidence_phone_confirmed():
         confidence=0.92,
         bbox=(200, 200, 280, 360),  # width 80, height 160 -> aspect ratio 2.0
     )
-    res = disambiguator.disambiguate(phone, hand_analysis=None, frame_index=1)
-    assert res.classification == PhoneClassification.CONFIRMED_PHONE
-    assert res.aspect_ratio == pytest.approx(2.0, 0.05)
+    # Frame 1: Raw confidence alone without hand grip yields POSSIBLE_PHONE, not CONFIRMED_PHONE
+    res1 = disambiguator.disambiguate(phone, hand_analysis=None, frame_index=1)
+    assert res1.classification == PhoneClassification.POSSIBLE_PHONE
+    assert res1.aspect_ratio == pytest.approx(2.0, 0.05)
+
+    # Frame 2: Temporal persistence across frames confirms
+    res2 = disambiguator.disambiguate(phone, hand_analysis=None, frame_index=2)
+    assert res2.classification == PhoneClassification.CONFIRMED_PHONE
+    assert res2.aspect_ratio == pytest.approx(2.0, 0.05)
 
 
 def test_irregular_aspect_ratio_uncertain():
     disambiguator = PhoneHandDisambiguator()
-    # Almost square bounding box (aspect ratio 1.05) with moderate confidence 0.55
+    # Hyper-elongated bounding box (aspect ratio 3.6) with moderate confidence 0.55
     phone = DetectedObject(
         class_id=67,
         class_name="cell phone",
         confidence=0.55,
-        bbox=(200, 200, 305, 300),
+        bbox=(200, 200, 250, 380),  # width 50, height 180 -> aspect ratio 3.6
     )
     res = disambiguator.disambiguate(phone, hand_analysis=None, frame_index=1)
     assert res.classification == PhoneClassification.UNCERTAIN_CANDIDATE

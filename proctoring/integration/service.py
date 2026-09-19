@@ -141,28 +141,49 @@ class ProctoringService:
 
         # Restore a stored enrolment so identity verification has a template.
         templates: list[np.ndarray] = []
-        candidate_keys = [
-            request.enrolment_id,
-            request.candidate_id,
-            request.user_id,
-            request.candidate_name,
-        ]
-        if request.candidate_id:
-            candidate_keys.append(f"user_{request.candidate_id}")
-        if request.user_id:
-            candidate_keys.append(f"user_{request.user_id}")
 
-        for key in candidate_keys:
-            if key:
-                templates = self.store.load_enrolment(str(key))
-                if templates:
-                    LOGGER.info(
-                        "Loaded %d reference template(s) for session %s using key '%s'",
-                        len(templates),
-                        session_id,
-                        key,
-                    )
-                    break
+        # 1. Direct template injection via request or request.metadata (Phase 2 boundary)
+        direct_templates = getattr(request, "reference_templates", None) or (
+            request.metadata.get("reference_templates") if request.metadata else None
+        )
+        if direct_templates:
+            for item in direct_templates:
+                try:
+                    arr = np.array(item, dtype=np.float32)
+                    if arr.ndim == 1 and arr.size > 0:
+                        templates.append(arr)
+                except Exception as exc:
+                    LOGGER.warning("Could not parse direct reference template for session %s: %s", session_id, exc)
+            if templates:
+                LOGGER.info(
+                    "Injected %d direct reference template(s) for session %s",
+                    len(templates),
+                    session_id,
+                )
+
+        if not templates:
+            candidate_keys = [
+                request.enrolment_id,
+                request.candidate_id,
+                request.user_id,
+                request.candidate_name,
+            ]
+            if request.candidate_id:
+                candidate_keys.append(f"user_{request.candidate_id}")
+            if request.user_id:
+                candidate_keys.append(f"user_{request.user_id}")
+
+            for key in candidate_keys:
+                if key:
+                    templates = self.store.load_enrolment(str(key))
+                    if templates:
+                        LOGGER.info(
+                            "Loaded %d reference template(s) for session %s using key '%s'",
+                            len(templates),
+                            session_id,
+                            key,
+                        )
+                        break
 
         if not templates and (request.candidate_name or request.candidate_id):
             # Check if any existing enrollment directory matches candidate_name or candidate_id tokens
@@ -271,14 +292,10 @@ class ProctoringService:
         evidence_sha256 = None
         evidence_file_path = None
 
-        has_incident = bool(
-            observation.active_event_types
-            or observation.prohibited_object_names
-            or (observation.face_count is not None and observation.face_count != 1)
-            or (dynamics and getattr(dynamics, "is_looking_away", False))
-        )
+        emitted_alert_types = [a["eventType"] for a in observation.emitted_alerts]
+        has_alert = bool(observation.emitted_alerts)
 
-        if has_incident and decoded is not None and decoded.size > 0:
+        if has_alert and decoded is not None and decoded.size > 0:
             ev_ref = engine.evidence_manager.capture_frame(
                 decoded,
                 frame_index=observation.frame_index,
@@ -303,7 +320,9 @@ class ProctoringService:
             is_looking_away=dynamics.is_looking_away if dynamics else None,
             detected_objects=observation.prohibited_object_names,
             detected_wearables=observation.wearable_names,
-            active_observations=observation.active_event_types,
+            active_observations=emitted_alert_types,
+            active_incidents=observation.active_event_types,
+            emitted_alerts=observation.emitted_alerts,
             engine_state=engine.state.value,
             processing_latency_ms=observation.timing.total_frame_ms if observation.timing else 0.0,
             next_frame_due_in_seconds=1.0 / max(0.1, engine.target_fps),
@@ -505,14 +524,23 @@ class ProctoringService:
                 if image is None:
                     rejected.append(f"frame {index}: could not be decoded or exceeded size limits")
                     continue
-                detection = detector.detect(image)
-                if detection.count != 1:
-                    rejected.append(
-                        f"frame {index}: expected exactly one face, found {detection.count}"
-                    )
-                    continue
-                templates.append(verifier.extract_feature(image, face=detection.faces[0]))
-                reference_images.append(image)
+                if hasattr(verifier, "preprocessor") and verifier.preprocessor is not None:
+                    prep = verifier.preprocessor.preprocess(image)
+                    if not prep.success:
+                        rejected.append(f"frame {index}: {prep.message or prep.status.value}")
+                        continue
+                    feat = verifier.extract_feature(prep.normalized_face, normalize_l2=True)
+                    templates.append(feat)
+                    reference_images.append(image)
+                else:
+                    detection = detector.detect(image)
+                    if detection.count != 1:
+                        rejected.append(
+                            f"frame {index}: expected exactly one face, found {detection.count}"
+                        )
+                        continue
+                    templates.append(verifier.extract_feature(image, face=detection.faces[0]))
+                    reference_images.append(image)
             except Exception as exc:
                 rejected.append(f"frame {index}: {exc}")
 
@@ -534,6 +562,7 @@ class ProctoringService:
                 else "Fewer than three usable samples; identity verification will be "
                 "less tolerant of pose and lighting change."
             ),
+            "templates": [t.flatten().tolist() for t in templates],
         }
 
     # ------------------------------------------------------------------

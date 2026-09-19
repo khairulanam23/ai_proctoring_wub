@@ -31,6 +31,7 @@ from proctoring.core.errors import ErrorCategory, PipelineErrorHandler
 from proctoring.core.events import (
     DetectorInfo,
     EventRecord,
+    EventStatus,
     EventType,
     coerce_event_type,
 )
@@ -588,6 +589,7 @@ class ProctoringEngine:
             absence_tolerance_seconds=self.config.absence_tolerance_seconds,
             min_event_duration_seconds=self.config.min_event_duration_seconds,
             min_duration_overrides=dict(self.policy.event_min_duration),
+            alert_repeat_interval_seconds=self.config.alert_repeat_interval_seconds,
         )
 
     def _build_evidence_manager(self) -> EvidenceManager:
@@ -775,8 +777,18 @@ class ProctoringEngine:
         timing.temporal_postprocess_ms = (time.perf_counter() - t0) * 1000.0
 
         obs.active_event_types = sorted(
-            {inc.event_type.value for inc in self.temporal_aggregator.active_incidents.values()}
+            {
+                inc.event_type.value
+                for inc in self.temporal_aggregator.active_incidents.values()
+                if inc.status == EventStatus.QUALIFIED
+            }
         )
+
+        emitted_alerts = self.temporal_aggregator.evaluate_frame_alerts(
+            timestamp=timestamp_seconds,
+            frame_index=frame_index,
+        )
+        obs.emitted_alerts = [alert.to_dict() for alert in emitted_alerts]
 
         # --- Stage 8 (Part 1): Retain Evidence Frame ---
         if self.config.capture_evidence:

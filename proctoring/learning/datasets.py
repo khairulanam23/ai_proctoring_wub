@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import random
 import shutil
 from dataclasses import dataclass, field
@@ -21,13 +20,30 @@ from typing import Any
 import cv2
 
 from proctoring.learning.annotations import (
+    YOLO_LABEL_MAP,
     HumanAnnotationRecord,
     ReviewStatus,
+    TargetObjectLabel,
     get_yolo_class_names,
 )
 from proctoring.learning.inbox import InboxSample
 
 LOGGER = logging.getLogger(__name__)
+
+FORBIDDEN_BIOMETRIC_KEYS = {
+    "embedding",
+    "embeddings",
+    "reference_template",
+    "reference_templates",
+    "face_vector",
+    "face_vectors",
+    "biometric_vector",
+    "biometric_vectors",
+    "sface_vector",
+    "face_descriptor",
+    "gallery_vector",
+    "probe_vector",
+}
 
 
 @dataclass
@@ -48,6 +64,7 @@ class DatasetManifest:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     provenance_hash: str = ""
+    sample_records: list[dict[str, Any]] = field(default_factory=list)
     notes: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,11 +81,12 @@ class DatasetManifest:
             "split_strategy": self.split_strategy,
             "created_at_utc": self.created_at_utc,
             "provenance_hash": self.provenance_hash,
+            "sample_records": self.sample_records,
             "notes": self.notes,
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "DatasetManifest":
+    def from_dict(cls, data: dict[str, Any]) -> DatasetManifest:
         return cls(
             dataset_id=data["dataset_id"],
             version=data["version"],
@@ -82,6 +100,7 @@ class DatasetManifest:
             split_strategy=data.get("split_strategy", "session_grouped"),
             created_at_utc=data.get("created_at_utc", ""),
             provenance_hash=data.get("provenance_hash", ""),
+            sample_records=data.get("sample_records", []),
             notes=data.get("notes", ""),
         )
 
@@ -110,12 +129,17 @@ class DatasetManager:
         if dataset_dir.exists():
             raise ValueError(f"Dataset version {version} already exists at {dataset_dir}")
 
-        # Filter only human-verified annotations
+        # Filter only human-reviewed annotations (CONFIRMED, CORRECTED, or legacy VERIFIED)
+        # Excludes PENDING, REJECTED, and UNCERTAIN
         verified_samples = [
             s
             for s in samples
             if s.sample_id in annotations
-            and annotations[s.sample_id].review_status == ReviewStatus.VERIFIED
+            and annotations[s.sample_id].review_status in (
+                ReviewStatus.CONFIRMED,
+                ReviewStatus.CORRECTED,
+                ReviewStatus.VERIFIED,
+            )
             and annotations[s.sample_id].quality_pass
         ]
 
@@ -150,10 +174,12 @@ class DatasetManager:
         counts = {"train": 0, "val": 0, "test": 0}
         hard_negatives = 0
         classes_set: set[str] = set()
+        sample_records: list[dict[str, Any]] = []
+        checksum_lines: list[str] = []
 
         # Compute provenance hash over sample IDs and split assignment
         hasher = hashlib.sha256()
-        hasher.update(f"{dataset_id}:{version}".encode("utf-8"))
+        hasher.update(f"{dataset_id}:{version}".encode())
 
         for s in verified_samples:
             if s.session_id in train_sessions:
@@ -166,12 +192,14 @@ class DatasetManager:
             counts[split] += 1
             ann = annotations[s.sample_id]
             for obj in ann.objects:
-                classes_set.add(obj.label.value)
-                if obj.is_hard_negative:
+                if obj.label in YOLO_LABEL_MAP and not obj.is_hard_negative:
+                    classes_set.add(obj.label.value)
+                if obj.is_hard_negative or obj.label == TargetObjectLabel.HARD_NEGATIVE_OBJECT:
                     hard_negatives += 1
 
-            hasher.update(f"{s.sample_id}:{split}".encode("utf-8"))
+            hasher.update(f"{s.sample_id}:{split}".encode())
 
+            dest_img_sha256: str | None = None
             if export_assets:
                 # Find source image
                 src_img_path: Path | None = None
@@ -190,6 +218,8 @@ class DatasetManager:
                 dest_img_path = dataset_dir / split / "images" / f"{s.sample_id}.jpg"
                 if src_img_path and src_img_path.exists():
                     shutil.copy2(src_img_path, dest_img_path)
+                    dest_img_sha256 = hashlib.sha256(dest_img_path.read_bytes()).hexdigest()
+                    checksum_lines.append(f"{dest_img_sha256}  {split}/images/{s.sample_id}.jpg")
                     im = cv2.imread(str(src_img_path))
                     if im is not None:
                         img_h, img_w = im.shape[:2]
@@ -198,6 +228,27 @@ class DatasetManager:
                 yolo_lines = ann.to_yolo_format(img_width=img_w, img_height=img_h)
                 dest_label_path = dataset_dir / split / "labels" / f"{s.sample_id}.txt"
                 dest_label_path.write_text("\n".join(yolo_lines) + ("\n" if yolo_lines else ""), encoding="utf-8")
+
+            # Scrub any biometric keys from metadata to ensure strict privacy
+            sanitized_meta = {
+                k: v for k, v in s.metadata.items()
+                if k.lower() not in FORBIDDEN_BIOMETRIC_KEYS
+            }
+
+            sample_records.append({
+                "sample_id": s.sample_id,
+                "session_id": s.session_id,
+                "frame_index": s.frame_index,
+                "target_class": s.target_class,
+                "split": split,
+                "image_file": f"{split}/images/{s.sample_id}.jpg" if export_assets else None,
+                "image_sha256": dest_img_sha256,
+                "label_file": f"{split}/labels/{s.sample_id}.txt" if export_assets else None,
+                "metadata": sanitized_meta,
+                "annotator_id": ann.annotator_id,
+                "review_status": ann.review_status.value,
+                "annotated_at_utc": ann.annotated_at_utc,
+            })
 
         # Generate standard data.yaml
         yaml_content = [
@@ -217,6 +268,11 @@ class DatasetManager:
 
         provenance_hash = hasher.hexdigest()
 
+        if checksum_lines:
+            (dataset_dir / "checksums.sha256").write_text("\n".join(checksum_lines) + "\n", encoding="utf-8")
+
+        (dataset_dir / "provenance.json").write_text(json.dumps(sample_records, indent=2), encoding="utf-8")
+
         manifest = DatasetManifest(
             dataset_id=dataset_id,
             version=version,
@@ -228,6 +284,7 @@ class DatasetManager:
             hard_negatives_count=hard_negatives,
             session_ids=all_sessions,
             provenance_hash=provenance_hash,
+            sample_records=sample_records,
             notes=notes,
         )
 
@@ -244,10 +301,41 @@ class DatasetManager:
         )
         return manifest
 
+    def verify_dataset_integrity(self, version: str) -> tuple[bool, list[str]]:
+        """Verify SHA-256 integrity of all exported evidence files in dataset."""
+        dataset_id = f"dataset_{version.replace('.', '_')}"
+        dataset_dir = self.datasets_root / dataset_id
+        prov_file = dataset_dir / "provenance.json"
+        if not prov_file.exists():
+            return False, [f"Missing provenance file at {prov_file}"]
+
+        try:
+            records = json.loads(prov_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return False, [f"Corrupt provenance file: {exc}"]
+
+        errors = []
+        for rec in records:
+            img_rel = rec.get("image_file")
+            expected_sha = rec.get("image_sha256")
+            if not img_rel or not expected_sha:
+                continue
+            img_path = dataset_dir / img_rel
+            if not img_path.exists():
+                errors.append(f"Missing file: {img_rel}")
+                continue
+            actual_sha = hashlib.sha256(img_path.read_bytes()).hexdigest()
+            if actual_sha != expected_sha:
+                errors.append(
+                    f"Integrity violation in {img_rel}: expected {expected_sha}, got {actual_sha}"
+                )
+
+        return len(errors) == 0, errors
+
     def load_manifest(self, version: str) -> DatasetManifest | None:
         dataset_id = f"dataset_{version.replace('.', '_')}"
         manifest_path = self.datasets_root / dataset_id / "dataset_manifest.json"
         if not manifest_path.exists():
             return None
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             return DatasetManifest.from_dict(json.loads(f.read()))
