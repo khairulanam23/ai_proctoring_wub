@@ -113,6 +113,7 @@ class AlertRecord:
     confidence: float
     bbox: tuple[int, int, int, int] | None = None
     object_class: str | None = None
+    description: str = ""
     observed_at: float | None = None
     qualified_at: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -120,6 +121,7 @@ class AlertRecord:
     def to_dict(self) -> dict[str, Any]:
         obs_t = self.observed_at if self.observed_at is not None else self.timestamp
         qual_t = self.qualified_at if self.qualified_at is not None else self.timestamp
+        desc = self.description or f"{self.event_type.value.replace('_', ' ').capitalize()} detected"
         return {
             "alert_id": self.alert_id,
             "incident_id": self.incident_id,
@@ -130,6 +132,8 @@ class AlertRecord:
             "frame_index": self.frame_index,
             "severity": self.severity.value,
             "confidence": round(self.confidence, 4),
+            "description": desc,
+            "reason": desc,
             "bbox": list(self.bbox) if self.bbox else None,
             "object_class": self.object_class,
             "metadata": self.metadata,
@@ -816,7 +820,9 @@ class UnifiedTemporalAggregator:
                     inc.last_alert_timestamp = timestamp
                     self.last_alert_by_event_type[event_type] = timestamp
                     alert_id = self._generate_alert_id(inc.event_type)
-
+                    desc = f"{inc.event_type.value.replace('_', ' ').capitalize()} qualified observation"
+                    if inc.object_class:
+                        desc = f"{inc.event_type.value}: {inc.object_class}"
                     rec = AlertRecord(
                         alert_id=alert_id,
                         incident_id=inc.incident_id,
@@ -829,6 +835,7 @@ class UnifiedTemporalAggregator:
                         confidence=inc.best_confidence,
                         bbox=inc.representative_bbox,
                         object_class=inc.object_class,
+                        description=desc,
                         observed_at=inc.start_timestamp,
                         qualified_at=inc.qualified_at or inc.start_timestamp,
                         metadata={

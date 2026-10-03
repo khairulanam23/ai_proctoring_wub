@@ -73,6 +73,7 @@ _BASELINE_EVENTS: frozenset[EventType] = frozenset(
         EventType.PHONE_DETECTED,
         EventType.PROHIBITED_OBJECT,
         EventType.HEADPHONES_DETECTED,
+        EventType.LOOKING_AWAY,
         EventType.BROWSER_TAB_SWITCH,
         EventType.BROWSER_FULLSCREEN_EXIT,
         EventType.BROWSER_WINDOW_BLUR,
@@ -83,7 +84,6 @@ _STRICT_ADDITIONS: frozenset[EventType] = frozenset(
     {
         EventType.MOUTH_MOVEMENT_DETECTED,
         EventType.CANDIDATE_SPEAKING,
-        EventType.LOOKING_AWAY,
         EventType.SUSPICIOUS_HEAD_POSE,
         EventType.FACE_OCCLUDED,
         EventType.HAND_NEAR_EAR,
@@ -327,6 +327,7 @@ class ExamPolicy:
                     EventType.HEADPHONES_DETECTED: 1.0,
                     EventType.MULTIPLE_FACES: 1.5,
                     EventType.CAMERA_OBSTRUCTED: 2.0,
+                    EventType.LOOKING_AWAY: 3.0,
                 },
                 yaw_limit_degrees=40.0,
                 pitch_limit_degrees=32.0,

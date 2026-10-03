@@ -25,13 +25,6 @@ dependencies = [
 behaviour = ["mediapipe>=0.10.0"]
 detection = ["ultralytics>=8.3.0", "torch>=2.0.0", "torchvision>=0.15.0"]
 plots = ["matplotlib>=3.7.0"]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-cov>=5.0.0",
-    "ruff>=0.6.0",
-    "mypy>=1.11.0",
-]
-kaggle = ["ai-proctoring[detection,plots]"]
 all = ["ai-proctoring[behaviour,detection,plots]"]
 
 [project.scripts]
@@ -39,26 +32,12 @@ proctor = "proctoring.cli.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["proctoring*"]
-exclude = ["tests*", "tools*", "scripts*", "data*", "docs*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-filterwarnings = [
-    # MediaPipe emits these from its own teardown at interpreter exit.
-    "ignore::DeprecationWarning:mediapipe.*",
-    # Third-party PyTorch/CLIP dependency TorchScript deprecation warning on Python 3.14+
-    "ignore:`torch.jit.load` is not supported in Python 3.14+.*:FutureWarning:torch.jit._serialization",
-]
-markers = [
-    "smoke: expensive real-world or model-loading smoke validation (excluded from default runs)",
-]
-addopts = "-m 'not smoke'"
+exclude = ["scripts*", "data*", "docs*"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-exclude = [".venv", "data", "models", "colab"]
+exclude = [".venv", "data", "models"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RET", "ARG"]
@@ -69,15 +48,11 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Fixtures look like unused arguments; bare asserts are the point of a test.
-"tests/*" = ["ARG", "B011", "F841"]
 # Scripts bootstrap sys.path before importing the package, which E402 flags.
 "scripts/*" = ["E402"]
-# Evaluation harnesses build large literal report structures.
-"tools/*" = ["ARG", "B007", "F841", "C408", "E741", "SIM105", "RET504"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["proctoring", "tools"]
+known-first-party = ["proctoring"]
 
 [tool.mypy]
 python_version = "3.10"

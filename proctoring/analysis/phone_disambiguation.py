@@ -151,10 +151,52 @@ class PhoneHandDisambiguator:
                     bbox=bbox,
                 )
 
+        # 4. Temporal confirmation tracking
+        confs = self._update_temporal_track(bbox, frame_index)
+
         # 3. Aspect ratio and stationery ambiguity check
-        # Phones are rectangular slabs (~16:9 to 21:9, ratio ~1.6 - 2.3).
-        # Squarish or moderately wide rectangular profiles (< 1.45) frequently conflate
-        # scientific calculators, power banks, and small notebooks on the candidate desk.
+        # Hard-negative: Squarish objects (< 1.05) or hyper-elongated (> 2.60) without hand grip
+        # are stationery/rulers and never qualify as phones even with multi-frame persistence.
+        if (aspect_ratio < 1.05 or aspect_ratio > self.max_phone_aspect_ratio) and not is_gripping:
+            return PhoneDisambiguationResult(
+                classification=PhoneClassification.UNCERTAIN_CANDIDATE,
+                confidence=raw_conf * 0.55,
+                raw_confidence=raw_conf,
+                reason=(
+                    f"Candidate aspect ratio ({aspect_ratio:.2f}) conflates smartphone with "
+                    f"scientific calculator or rectangular stationery on desk; domain quality NOT_VALIDATED"
+                    if aspect_ratio < 1.05
+                    else f"Irregular aspect ratio ({aspect_ratio:.2f}) for standard smartphone"
+                ),
+                aspect_ratio=aspect_ratio,
+                hand_iou=max_iou,
+                hand_gripping=False,
+                temporal_confirmations=confs,
+                bbox=bbox,
+                exam_category=ExamObjectCategory.CALCULATOR if aspect_ratio < 1.05 else ExamObjectCategory.OTHER,
+                domain_validation_status="NOT_VALIDATED",
+            )
+
+        # Multi-frame confirmation: If hand is gripping an object or confirmed over multiple frames
+        if is_gripping or confs >= self.min_temporal_frames:
+            return PhoneDisambiguationResult(
+                classification=PhoneClassification.CONFIRMED_PHONE,
+                confidence=min(1.0, raw_conf * (1.1 if is_gripping else 1.0)),
+                raw_confidence=raw_conf,
+                reason=(
+                    "Confirmed phone with hand grip interaction"
+                    if is_gripping
+                    else "Confirmed phone with multi-frame persistence"
+                ),
+                aspect_ratio=aspect_ratio,
+                hand_iou=max_iou,
+                hand_gripping=is_gripping,
+                temporal_confirmations=confs,
+                bbox=bbox,
+            )
+
+        # Single-frame candidate with aspect ratio < 1.45 conflates calculator/stationery on desk
+        # until confirmed by temporal tracking (confs >= min_temporal_frames)
         if aspect_ratio < 1.45 and not is_gripping:
             return PhoneDisambiguationResult(
                 classification=PhoneClassification.UNCERTAIN_CANDIDATE,
@@ -167,7 +209,7 @@ class PhoneHandDisambiguator:
                 aspect_ratio=aspect_ratio,
                 hand_iou=max_iou,
                 hand_gripping=False,
-                temporal_confirmations=self._update_temporal_track(bbox, frame_index),
+                temporal_confirmations=confs,
                 bbox=bbox,
                 exam_category=ExamObjectCategory.CALCULATOR,
                 domain_validation_status="NOT_VALIDATED",
@@ -186,28 +228,7 @@ class PhoneHandDisambiguator:
                 domain_validation_status="NOT_VALIDATED",
             )
 
-        # 4. Temporal confirmation tracking
-        confs = self._update_temporal_track(bbox, frame_index)
-
-        # If hand is gripping an object or confirmed over multiple frames
-        if is_gripping or confs >= self.min_temporal_frames:
-            return PhoneDisambiguationResult(
-                classification=PhoneClassification.CONFIRMED_PHONE,
-                confidence=min(1.0, raw_conf * (1.1 if is_gripping else 1.0)),
-                raw_confidence=raw_conf,
-                reason=(
-                    "Confirmed phone with hand grip interaction"
-                    if is_gripping
-                    else "Confirmed phone with multi-frame persistence"
-                ),
-                aspect_ratio=aspect_ratio,
-                hand_iou=max_iou,
-                hand_gripping=is_gripping,
-                temporal_confirmations=confs,
-                bbox=bbox,
-            )
-
-        # Single-frame candidate with valid aspect ratio -> POSSIBLE_PHONE
+        # Single-frame candidate with standard rectangular geometry awaiting temporal confirmation
         if aspect_ok and raw_conf >= 0.50:
             return PhoneDisambiguationResult(
                 classification=PhoneClassification.POSSIBLE_PHONE,

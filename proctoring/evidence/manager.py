@@ -111,8 +111,36 @@ class EvidenceManager:
                     p = self.package_dir / self._saved_frame_paths[f_idx]
                     if p.exists():
                         return p
+                # Check frames_dir for frame_{f_idx:06d}_*.jpg
+                if self.frames_dir.exists():
+                    matches = sorted(self.frames_dir.glob(f"frame_{f_idx:06d}_*.jpg"))
+                    if not matches:
+                        matches = sorted(self.frames_dir.glob(f"frame_{f_idx}_*.jpg"))
+                    if matches and matches[0].is_file():
+                        return matches[0]
             except Exception:
                 pass
+
+        # Manifest-based resolution if manifest.json exists
+        manifest_path = self.package_dir / "manifest.json"
+        if manifest_path.exists() and manifest_path.is_file():
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as mf:
+                    mdata = json.load(mf)
+                checksums = mdata.get("integrity_checksums", {})
+                target_str = (
+                    f"frame_{int(evidence_id.split('_')[2]):06d}_"
+                    if evidence_id.startswith("ev_frm_")
+                    else evidence_id
+                )
+                for rel_p in checksums:
+                    if target_str in rel_p:
+                        p = self.package_dir / rel_p
+                        if p.exists() and p.is_file():
+                            return p
+            except Exception:
+                pass
+
         for search_dir in [self.frames_dir, self.crops_dir, self.review_dir]:
             if search_dir.exists():
                 for candidate in search_dir.glob(f"*{evidence_id}*"):

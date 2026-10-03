@@ -306,6 +306,22 @@ class ProctoringService:
                 evidence_sha256 = ev_ref.sha256
                 evidence_file_path = ev_ref.file_path
 
+        # Preserve rich alert details (eventType, confidence, severity, description, evidence reference, metadata)
+        for alert_dict in observation.emitted_alerts:
+            if evidence_id:
+                alert_dict.setdefault("evidenceRef", evidence_id)
+                alert_dict.setdefault("evidence_ref", evidence_id)
+                alert_dict.setdefault("evidenceId", evidence_id)
+                alert_dict.setdefault("evidence_id", evidence_id)
+                alert_dict.setdefault("evidence_sha256", evidence_sha256)
+                alert_dict.setdefault("evidence_file_path", evidence_file_path)
+            if "description" not in alert_dict:
+                desc = alert_dict.get("reason") or f"{alert_dict.get('eventType', 'Observation')} detected"
+                alert_dict["description"] = desc
+                alert_dict["reason"] = desc
+            elif "reason" not in alert_dict:
+                alert_dict["reason"] = alert_dict["description"]
+
         return FrameAck(
             session_id=session_id,
             frame_index=observation.frame_index,
@@ -320,7 +336,7 @@ class ProctoringService:
             is_looking_away=dynamics.is_looking_away if dynamics else None,
             detected_objects=observation.prohibited_object_names,
             detected_wearables=observation.wearable_names,
-            active_observations=emitted_alert_types,
+            active_observations=observation.emitted_alerts if observation.emitted_alerts else emitted_alert_types,
             active_incidents=observation.active_event_types,
             emitted_alerts=observation.emitted_alerts,
             engine_state=engine.state.value,

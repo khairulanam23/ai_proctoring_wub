@@ -1,16 +1,23 @@
-# Python
+# ==============================================================================
+# AI Proctoring Engine Git Ignore Rules
+# ==============================================================================
+
+# Python Bytecode & Intermediates
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
 
-# Environments & Virtual Envs
+# Virtual Environments
 .venv/
 venv/
 env/
 ENV/
+**/.venv/
+**/venv/
 
-# Environment variables & secrets
+# Environment Variables & Secrets
 .env
 .env.*
 !.env.example
@@ -18,31 +25,35 @@ ENV/
 # Jupyter Notebooks
 .ipynb_checkpoints/
 
-# IDE & Editor settings
+# IDE & Editor Settings
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# OS metadata
+# OS Metadata
 .DS_Store
 Thumbs.db
 
-# Python tooling & caches
+# Python Tooling & Caches
 .pytest_cache/
+**/.pytest_cache/
 .mypy_cache/
+**/.mypy_cache/
 .ruff_cache/
+**/.ruff_cache/
 .coverage
 htmlcov/
 *.egg-info/
 build/
 dist/
 
-# Logs
+# Runtime Logs
 *.log
 logs/
 
-# AI datasets & raw data
+# AI Datasets & Raw Captures
 data/*
 !data/.gitkeep
 datasets/
@@ -50,15 +61,11 @@ datasets/
 *.tar.gz
 *.tgz
 
-# Model artifacts & checkpoints
+# Model Checkpoints & Large Weights
 models/*
 !models/.gitkeep
-checkpoints/
-runs/
-training/
-wandb/
-
-# Large ML / Model weights files
+weights/*
+!weights/.gitkeep
 *.pt
 *.pth
 *.onnx
@@ -68,15 +75,40 @@ wandb/
 *.keras
 *.bin
 *.engine
+checkpoints/
+runs/
+training/
+wandb/
 
-# Temporary files
+# Test & Validation Results
+coverage/
+test-results/
+stress-test-results/
+final-test-results/
+final-validation-results/
+
+# Cryptographic Keys & Keystores
+*.jks
+*.keystore
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependency directories
+node_modules/
+vendor/
+target/
+.gradle/
+
+# Temporary Files
 tmp/
 temp/
 scratch/
 
-# Docker build/data
+# Docker Build & Data
 docker-data/
 
-# Generated session evidence packages
+# Generated Session Evidence Packages
 data/results/
 data/evidence_packages/

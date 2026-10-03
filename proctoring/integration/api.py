@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -459,47 +462,175 @@ def create_app(service: ProctoringService | None = None) -> FastAPI:
     @app.get("/api/v1/session/{session_id}/evidence/{evidence_id}")
     async def get_session_evidence(session_id: str, evidence_id: str):
         """Retrieve real evidence image artifact with SHA-256 integrity header."""
+        # 1. Path traversal and identifier security checks
+        if not re.match(r"^[a-zA-Z0-9_\-]+$", session_id) or not re.match(r"^[a-zA-Z0-9_\-]+$", evidence_id):
+            raise HTTPException(status_code=400, detail="Invalid session or evidence identifier format")
+
         evidence_path: Path | None = None
         calc_sha: str | None = None
+
+        def _hash_file(p: Path) -> str:
+            h = hashlib.sha256()
+            with open(p, "rb") as fl:
+                while ch := fl.read(65536):
+                    h.update(ch)
+            return h.hexdigest()
+
+        # Step 1: Existing in-memory evidence mapping, if active engine available
         try:
-            engine = app.state.service._require_engine(session_id)
-            evidence_path = engine.evidence_manager.get_evidence_path(evidence_id)
-            if evidence_path and evidence_path.exists():
+            resolved_id = app.state.service._resolve_session_id(session_id)
+            engine = app.state.service._require_engine(resolved_id)
+            ep = engine.evidence_manager.get_evidence_path(evidence_id)
+            if ep and ep.is_file():
+                evidence_path = ep.resolve()
                 calc_sha = engine.evidence_manager._compute_sha256(evidence_path)
         except Exception:
             pass
 
-        # Fallback: search session directories on disk
-        if not evidence_path or not evidence_path.exists():
-            for base_dir in [Path("data/evidence_packages"), Path("data/results/sessions"), Path("data/sessions")]:
-                candidate_dir = base_dir / session_id
-                if candidate_dir.exists():
-                    for sub in ["evidence/frames", "evidence/crops", "evidence/review"]:
-                        d = candidate_dir / sub
-                        if d.exists():
-                            for f in d.glob(f"*{evidence_id}*"):
-                                if f.is_file():
-                                    evidence_path = f
-                                    import hashlib
-                                    h = hashlib.sha256()
-                                    with open(f, "rb") as fl:
-                                        while ch := fl.read(65536):
-                                            h.update(ch)
-                                    calc_sha = h.hexdigest()
+        # Step 2: Persisted artifact discovery across session storage roots
+        if not evidence_path or not evidence_path.is_file():
+            search_roots = []
+            if hasattr(app.state, "service") and getattr(app.state.service, "output_dir", None):
+                search_roots.append(Path(app.state.service.output_dir))
+            search_roots.extend([
+                Path("data/results/lms_sessions"),
+                Path("data/evidence_packages"),
+                Path("data/results/sessions"),
+                Path("data/sessions"),
+            ])
+
+            seen_roots = set()
+            unique_roots: list[Path] = []
+            for r in search_roots:
+                resolved = r.resolve()
+                if resolved.is_dir() and str(resolved) not in seen_roots:
+                    seen_roots.add(str(resolved))
+                    unique_roots.append(r)
+
+            frame_idx: int | None = None
+            if evidence_id.startswith("ev_frm_"):
+                try:
+                    frame_idx = int(evidence_id.split("_")[2])
+                except (IndexError, ValueError):
+                    frame_idx = None
+
+            for base_dir in unique_roots:
+                candidates: list[Path] = []
+                direct_dir = base_dir / session_id
+                if direct_dir.is_dir():
+                    candidates.append(direct_dir)
+                try:
+                    candidates.extend([p for p in base_dir.glob(f"attempt_{session_id}*") if p.is_dir()])
+                    candidates.extend([p for p in base_dir.glob(f"*{session_id}*") if p.is_dir()])
+                except Exception:
+                    pass
+
+                # Deduplicate candidate directories
+                seen_cands = set()
+                unique_cands: list[Path] = []
+                for c in candidates:
+                    resolved_c = c.resolve()
+                    if str(resolved_c) not in seen_cands:
+                        seen_cands.add(str(resolved_c))
+                        unique_cands.append(c)
+
+                for cand_dir in unique_cands:
+                    # 2A. Sealed/persisted manifest resolution (authoritative when available)
+                    manifest_file = cand_dir / "manifest.json"
+                    if manifest_file.is_file():
+                        try:
+                            with open(manifest_file, "r", encoding="utf-8") as mf:
+                                mdata = json.load(mf)
+                            checksums: dict[str, str] = mdata.get("integrity_checksums", {})
+                            matched_rel: str | None = None
+                            expected_sha: str | None = None
+
+                            if frame_idx is not None:
+                                target_prefix = f"frame_{frame_idx:06d}_"
+                                for rel_path, sha in checksums.items():
+                                    if rel_path.startswith("evidence/frames/") and target_prefix in rel_path:
+                                        matched_rel = rel_path
+                                        expected_sha = sha
+                                        break
+
+                            if not matched_rel:
+                                for rel_path, sha in checksums.items():
+                                    if evidence_id in rel_path:
+                                        matched_rel = rel_path
+                                        expected_sha = sha
+                                        break
+
+                            if matched_rel:
+                                target_path = (cand_dir / matched_rel).resolve()
+                                if target_path.is_file() and target_path.is_relative_to(cand_dir.resolve()):
+                                    actual_sha = _hash_file(target_path)
+                                    if expected_sha and actual_sha.lower() != expected_sha.lower():
+                                        LOGGER.error(
+                                            "Manifest SHA-256 mismatch for %s: expected %s, got %s",
+                                            target_path,
+                                            expected_sha,
+                                            actual_sha,
+                                        )
+                                        raise HTTPException(
+                                            status_code=500,
+                                            detail="Evidence artifact integrity check failed (SHA-256 mismatch)",
+                                        )
+                                    evidence_path = target_path
+                                    calc_sha = actual_sha
                                     break
-                        if evidence_path:
-                            break
+                        except HTTPException:
+                            raise
+                        except Exception as exc:
+                            LOGGER.debug("Could not inspect manifest in %s: %s", cand_dir, exc)
+
+                    # 2B. Deterministic physical frame lookup based on logical frame index
+                    if not evidence_path and frame_idx is not None:
+                        frames_dir = cand_dir / "evidence" / "frames"
+                        if frames_dir.is_dir():
+                            matches = sorted(frames_dir.glob(f"frame_{frame_idx:06d}_*.jpg"))
+                            if not matches:
+                                matches = sorted(frames_dir.glob(f"frame_{frame_idx}_*.jpg"))
+                            if matches:
+                                target_path = matches[0].resolve()
+                                if target_path.is_file() and target_path.is_relative_to(cand_dir.resolve()):
+                                    evidence_path = target_path
+                                    calc_sha = _hash_file(target_path)
+                                    break
+
+                    # 2C. Generic evidence directory search for non-frame evidence references
+                    if not evidence_path:
+                        for sub in ["evidence/crops", "evidence/review", "evidence/frames", "evidence"]:
+                            d = cand_dir / sub
+                            if d.is_dir():
+                                for f in sorted(d.glob(f"*{evidence_id}*")):
+                                    target_path = f.resolve()
+                                    if target_path.is_file() and target_path.is_relative_to(cand_dir.resolve()):
+                                        evidence_path = target_path
+                                        calc_sha = _hash_file(target_path)
+                                        break
+                                if evidence_path:
+                                    break
+
+                    if evidence_path:
+                        break
+
                 if evidence_path:
                     break
 
-        if not evidence_path or not evidence_path.exists():
-            raise HTTPException(status_code=404, detail=f"Evidence {evidence_id} not found for session {session_id}")
+        if not evidence_path or not evidence_path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Evidence {evidence_id} not found for session {session_id}",
+            )
+
+        if not calc_sha:
+            calc_sha = _hash_file(evidence_path)
 
         return FileResponse(
             path=str(evidence_path),
             media_type="image/jpeg",
             headers={
-                "X-Evidence-SHA256": calc_sha or "",
+                "X-Evidence-SHA256": calc_sha,
                 "X-Evidence-ID": evidence_id,
             },
         )

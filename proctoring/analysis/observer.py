@@ -117,10 +117,11 @@ class BehaviourObserver:
                 or policy.allows(EventType.CANDIDATE_SPEAKING)
             ):
                 mouth_event = (
-                    EventType.MOUTH_MOVEMENT_DETECTED
-                    if policy.allows(EventType.MOUTH_MOVEMENT_DETECTED)
-                    else EventType.CANDIDATE_SPEAKING
+                    EventType.CANDIDATE_SPEAKING
+                    if policy.allows(EventType.CANDIDATE_SPEAKING)
+                    else EventType.MOUTH_MOVEMENT_DETECTED
                 )
+
                 active[mouth_event] = {
                     "confidence": float(dynamics.speech_activity or 0.5),
                     "bbox": dynamics.mouth_region,

@@ -206,8 +206,8 @@ class FrameAck:
     detected_objects: list[str] = field(default_factory=list)
     detected_wearables: list[str] = field(default_factory=list)
 
-    active_observations: list[str] = field(default_factory=list)
-    """Event types currently open. Not a verdict — conditions being watched."""
+    active_observations: list[Any] = field(default_factory=list)
+    """Event types or structured observations currently open. Not a verdict — conditions being watched."""
 
     active_incidents: list[str] = field(default_factory=list)
     """All qualified conditions currently active on screen."""
